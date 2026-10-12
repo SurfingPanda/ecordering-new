@@ -431,15 +431,15 @@ function PivotTable({ pivot }: { pivot: NonNullable<Props['pivot']> }) {
     return (
         <section className={panel}>
             <div className="overflow-x-auto">
-                <table className="w-full border-collapse" style={{ minWidth: 520 + pivot.stores.length * 110 }}>
+                <table className="w-full border-collapse" style={{ minWidth: 520 + pivot.stores.length * 140 }}>
                     <thead className="bg-secondary text-secondary-foreground">
                         <tr>
                             <th className={th}>SKU</th>
                             <th className={th}>Product</th>
                             <th className={th}>Item type</th>
                             {pivot.stores.map((s) => (
-                                <th key={s.id} className={cn(th, 'text-right')} title={s.name}>
-                                    {s.code}
+                                <th key={s.id} className={cn(th, 'min-w-[8.5rem] whitespace-normal text-right normal-case')} title={s.name}>
+                                    {s.code}-{s.name.replace(/^BW\s+/i, '')}
                                 </th>
                             ))}
                             <th className={cn(th, 'text-right')}>Total</th>

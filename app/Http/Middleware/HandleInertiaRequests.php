@@ -54,17 +54,19 @@ class HandleInertiaRequests extends Middleware
             // today's submission deadline, for store accounts (drives the banner and disabled states)
             'deadline' => fn () => $user?->isStore() && $user->store ? $this->deadlineFor($user->store) : null,
             // admins: how many active stores haven't ordered yet today (sidebar badge + the reminder before the cutoff)
-            'ordering_today' => fn () => $user?->isAdmin() ? $this->orderingToday() : null,
+            'ordering_today' => fn () => $user?->isManagement() ? $this->orderingToday($user->visibleStoreIds()) : null,
         ];
     }
 
     /** Cheap summary for the admin sidebar: the standard cutoff (stores may have their own, see Today's Orders). */
-    private function orderingToday(): array
+    /** @param  list<int>|null  $ids  the stores this person looks after (null = all, for admins) */
+    private function orderingToday(?array $ids): array
     {
         $service = app(SubmissionDeadline::class);
-        $total = Store::where('is_active', true)->count();
+        $active = Store::where('is_active', true)->when($ids !== null, fn ($q) => $q->whereIn('id', $ids));
+        $total = (clone $active)->count();
         $ordered = \App\Models\Order::whereIn('status', \App\Models\Order::ACTIVE)->where('order_date', today()->toDateString())
-            ->whereIn('store_id', Store::where('is_active', true)->select('id'))->distinct()->count('store_id');
+            ->whereIn('store_id', (clone $active)->select('id'))->distinct()->count('store_id');
         [$h, $mi] = array_map('intval', explode(':', $service->defaultTime()));
         $at = \Carbon\CarbonImmutable::now()->startOfDay()->setTime($h, $mi);
 
@@ -73,6 +75,10 @@ class HandleInertiaRequests extends Middleware
             'not_ordered' => max(0, $total - $ordered),
             'deadline_at' => $at->toIso8601String(),
             'deadline_time' => $service->defaultTime(),
+            // posted orders that did not reach ECPOS: a failed send, or one stuck in the queue for 10+ minutes (is the worker running?)
+            'ecpos_problems' => \App\Models\Order::where('status', 'posted')->when($ids !== null, fn ($q) => $q->whereIn('store_id', $ids))->where(fn ($q) => $q
+                ->where('ecpos_state', 'failed')
+                ->orWhere(fn ($q) => $q->whereIn('ecpos_state', ['queued', 'sending'])->where('ecpos_state_at', '<', now()->subMinutes(10))))->count(),
             'open' => \Carbon\CarbonImmutable::now()->lessThanOrEqualTo($at),
         ];
     }

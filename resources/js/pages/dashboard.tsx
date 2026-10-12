@@ -8,6 +8,7 @@ import DailyChart, { type DailyPoint } from '@/components/charts/daily-chart';
 import ShareBar from '@/components/charts/share-bar';
 import CatalogUnits from '@/components/catalog-units';
 import OrderCards from '@/components/order-cards';
+import EcposTag from '@/components/ecpos-tag';
 import { StatusBadge } from '@/components/ui/badge';
 import AppLayout from '@/layouts/app-layout';
 import { catalogColor, catalogLabel, catalogUnitsKey, catalogs, nf, shortDate } from '@/lib/charts';
@@ -214,6 +215,7 @@ export default function Dashboard({ scope, range, period, kpis, daily, split, to
                                     ))}
                                     <td className={td}>
                                         <StatusBadge status={o.status} />
+                                        <EcposTag state={o.ecpos_state} />
                                     </td>
                                 </tr>
                             ))}

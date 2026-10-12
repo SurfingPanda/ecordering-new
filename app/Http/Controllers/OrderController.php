@@ -29,7 +29,7 @@ class OrderController extends Controller
         $user = $request->user();
         $status = in_array($request->query('status'), Order::STATUSES, true) ? $request->query('status') : null;
         $catalog = in_array($request->query('catalog'), Item::SOURCES, true) ? $request->query('catalog') : null;
-        $storeId = $user->isAdmin() && $request->query('store') ? (int) $request->query('store') : null;
+        $storeId = $user->isManagement() && $request->query('store') ? (int) $request->query('store') : null;
         $search = trim((string) $request->query('search', ''));
 
         $orders = Order::with(['user:id,name', 'store:id,code,name'])
@@ -42,7 +42,8 @@ class OrderController extends Controller
             ->when($search !== '', fn ($q) => $q->where(function ($q) use ($search) {
                 $q->whereHas('user', fn ($u) => $u->where('name', 'like', "%{$search}%"))
                     ->orWhereHas('store', fn ($s) => $s->where('name', 'like', "%{$search}%")->orWhere('code', 'like', "%{$search}%"));
-                $q->orWhere('tr_number', 'like', "%{$search}%"); // "TR-BW0018-000001", "BW0018" or "000001"
+                $q->orWhere('tr_number', 'like', "%{$search}%") // our reference: "TR-BW0018-000001", "BW0018" or "000001"
+                    ->orWhere('ecpos_journal_id', 'like', '%'.preg_replace('/^tr/i', '', $search).'%'); // ECPOS's number: "TR4700000005" or "4700000005"
             }))
             ->orderByDesc('order_date')
             ->orderByDesc('id')
@@ -56,7 +57,7 @@ class OrderController extends Controller
             'catalog' => $catalog,
             'store' => $storeId,
             'search' => $search,
-            'stores' => $user->isAdmin() ? Store::orderBy('name')->get(['id', 'code', 'name']) : [],
+            'stores' => $user->isManagement() ? Store::when($user->visibleStoreIds() !== null, fn ($q) => $q->whereIn('id', $user->visibleStoreIds()))->orderBy('name')->get(['id', 'code', 'name']) : [],
         ]);
     }
 
@@ -77,10 +78,16 @@ class OrderController extends Controller
                 ...$this->summary($order),
                 'notes' => $order->notes,
                 'posted_at' => $order->posted_at?->toIso8601String(),
-                'ecpos' => $order->ecpos_sent_at ? [
+                'ecpos' => $user->isManagement() && $order->ecpos_state ? [ // ECPOS details are for admins only; stores never see them
+                    'state' => $order->ecpos_state, // queued | sending | sent | failed
                     'journal_id' => $order->ecpos_journal_id,
-                    'sent_at' => $order->ecpos_sent_at->toIso8601String(),
+                    'sent_at' => $order->ecpos_sent_at?->toIso8601String(),
                     'note' => $order->ecpos_note,
+                    'error' => $order->ecpos_error,
+                    'uncertain' => $order->ecpos_uncertain,
+                    'attempts' => (int) $order->ecpos_attempts,
+                    'max_attempts' => \App\Jobs\SendOrderToEcpos::MAX_ATTEMPTS,
+                    'next_at' => $order->ecpos_next_at?->toIso8601String(),
                 ] : null,
                 'cancelled_at' => $order->cancelled_at?->toIso8601String(),
                 'cancelled_by' => $order->cancelledBy?->name,
@@ -93,7 +100,7 @@ class OrderController extends Controller
                     'category' => $l->category,
                     'quantity' => $l->quantity,
                 ]),
-                'events' => $order->events->map(fn ($e) => [
+                'events' => $order->events->reject(fn ($e) => ! $user->isManagement() && in_array($e->event, ['sent', 'send_failed', 'send_requested'], true))->values()->map(fn ($e) => [
                     'id' => $e->id,
                     'event' => $e->event,
                     'note' => $e->note,
@@ -105,9 +112,9 @@ class OrderController extends Controller
             'can' => [
                 'post' => $user->isStore() && $order->status === 'pending',
                 'reset' => $user->isStore() && $order->status === 'pending',
-                'cancel' => $user->isAdmin() && $order->status === 'posted',
+                'cancel' => $user->isManagement() && $order->status === 'posted',
                 'cancel_needs_reason' => true,
-                'send_ecpos' => $order->status === 'posted' && ! $order->ecpos_sent_at && app(\App\Services\EcposOrders::class)->enabled(),
+                'send_ecpos' => $user->isManagement() && $order->status === 'posted' && ! $order->ecpos_sent_at && ! in_array($order->ecpos_state, ['queued', 'sending'], true) && app(\App\Services\EcposOrders::class)->enabled(),
             ],
         ]);
     }
@@ -374,8 +381,9 @@ class OrderController extends Controller
     }
 
     /** Live ECPOS status of an order that was sent (the order page shows it and has a refresh button). */
-    public function ecposStatus(Order $order): JsonResponse
+    public function ecposStatus(Request $request, Order $order): JsonResponse
     {
+        abort_unless($request->user()->isManagement(), 403);
         abort_unless($order->ecpos_journal_id, 404);
 
         try {
@@ -386,34 +394,37 @@ class OrderController extends Controller
     }
 
     /**
-     * Sends a POSTED order that never reached ECPOS (for example it was posted while sending was switched off, or ECPOS
-     * was unreachable). The order's own store or an admin can do it; it only ever happens once per order.
+     * Sends a POSTED order that is not in ECPOS yet: posted while sending was off, or a send that failed. Admins only. It is queued and sent in the background like any other, and it never happens twice
+     * for an order ECPOS already has.
      */
     public function sendToEcpos(Request $request, Order $order): RedirectResponse
     {
+        abort_unless($request->user()->isManagement(), 403, 'Only an admin or area manager can send an order to ECPOS.');
         $orders = app(\App\Services\EcposOrders::class);
         abort_unless($orders->enabled(), 404);
 
         DB::transaction(function () use ($order, $orders, $request) {
             $fresh = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
 
-            if ($fresh->status !== 'posted' || $fresh->ecpos_sent_at) {
-                throw ValidationException::withMessages(['ecpos' => $fresh->ecpos_sent_at ? "{$fresh->number()} was already sent to ECPOS." : 'Only a posted order can be sent to ECPOS.']);
+            if ($fresh->status !== 'posted' || $fresh->ecpos_sent_at || in_array($fresh->ecpos_state, ['queued', 'sending'], true)) {
+                throw ValidationException::withMessages(['ecpos' => $fresh->ecpos_sent_at
+                    ? "{$fresh->number()} was already sent to ECPOS."
+                    : (in_array($fresh->ecpos_state, ['queued', 'sending'], true) ? "{$fresh->number()} is already being sent." : 'Only a posted order can be sent to ECPOS.')]);
             }
 
             try {
-                $sent = $orders->send($fresh);
+                $orders->prepare($fresh); // refuse right away if it can't be sent at all
             } catch (\RuntimeException $e) {
                 throw ValidationException::withMessages(['ecpos' => $e->getMessage()]);
             }
 
-            $fresh->update(['ecpos_journal_id' => $sent['journal_id'], 'ecpos_sent_at' => now(), 'ecpos_note' => $sent['note']]);
-            $fresh->record('sent', $request->user(), 'Sent to ECPOS'.($sent['journal_id'] ? ', journal '.$sent['journal_id'] : ''));
+            $fresh->forceFill(['ecpos_state' => 'queued', 'ecpos_attempts' => 0, 'ecpos_error' => null, 'ecpos_uncertain' => false, 'ecpos_state_at' => now(), 'ecpos_next_at' => null])->save();
+            $fresh->record('send_requested', $request->user(), 'Sending to ECPOS again');
+            \App\Jobs\SendOrderToEcpos::dispatch($fresh->id)->afterCommit();
         });
 
-        return back()->with('success', "Order {$order->number()} was sent to ECPOS.");
+        return back()->with('success', "Order {$order->number()} is being sent to ECPOS.");
     }
-
     /** A store posts (submits) its own pending order. */
     public function post(Request $request, Order $order): RedirectResponse
     {
@@ -430,18 +441,25 @@ class OrderController extends Controller
             $ecpos = [];
             $orders = app(\App\Services\EcposOrders::class);
             if ($orders->enabled()) {
-                // Send first: if ECPOS can't take the order, the TR stays pending and the store can try again.
+                // An order that can never be sent (store not linked, no ECPOS items) is refused here, while the store can still fix it.
                 try {
-                    $sent = $orders->send($fresh);
+                    $orders->prepare($fresh);
                 } catch (\RuntimeException $e) {
                     throw ValidationException::withMessages(['ecpos' => $e->getMessage()]);
                 }
-                $ecpos = ['ecpos_journal_id' => $sent['journal_id'], 'ecpos_sent_at' => now(), 'ecpos_note' => $sent['note']];
+                // Everything else (ECPOS slow or down) must not hold the store up: it is posted now and sent in the background.
+                $ecpos = ['ecpos_state' => 'queued', 'ecpos_attempts' => 0, 'ecpos_error' => null, 'ecpos_uncertain' => false, 'ecpos_state_at' => now()];
             }
 
             $fresh->update(['status' => 'posted', 'posted_at' => now()] + $ecpos);
-            $fresh->record('posted', $user, $ecpos && $ecpos['ecpos_journal_id'] ? 'Sent to ECPOS, journal '.$ecpos['ecpos_journal_id'] : null);
+            $fresh->record('posted', $user);
+
+            if ($ecpos) {
+                \App\Jobs\SendOrderToEcpos::dispatch($fresh->id)->afterCommit();
+            }
         });
+
+        \App\Support\AdminAlerts::orderPosted($order->refresh());
 
         return back()->with('success', "Order {$order->number()} posted.");
     }
@@ -454,16 +472,16 @@ class OrderController extends Controller
     public function cancel(Request $request, Order $order): RedirectResponse
     {
         $user = $request->user();
-        abort_unless($user->isAdmin(), 403, 'Only an admin can cancel an order. Use Reset to change a pending one.');
+        abort_unless($user->isManagement(), 403, 'Only an admin or area manager can cancel an order. Use Reset to change a pending one.');
 
         $data = $request->validate([
-            'reason' => [$user->isAdmin() ? 'required' : 'nullable', 'string', 'min:3', 'max:500'],
+            'reason' => [$user->isManagement() ? 'required' : 'nullable', 'string', 'min:3', 'max:500'],
         ], [
             'reason.required' => 'Please give a reason for cancelling this TR.',
             'reason.min' => 'The reason is too short.',
         ]);
 
-        $allowed = $user->isAdmin() ? 'posted' : 'pending';
+        $allowed = $user->isManagement() ? 'posted' : 'pending';
 
         DB::transaction(function () use ($order, $user, $data, $allowed) {
             $fresh = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
@@ -472,7 +490,7 @@ class OrderController extends Controller
                 throw ValidationException::withMessages([
                     'reason' => $fresh->status === 'cancelled'
                         ? "{$fresh->number()} is already cancelled."
-                        : ($user->isAdmin()
+                        : ($user->isManagement()
                             ? "Only a posted TR can be cancelled. {$fresh->number()} is {$fresh->status}."
                             : "Only a pending order can be cancelled. {$fresh->number()} is {$fresh->status}."),
                 ]);
@@ -489,7 +507,7 @@ class OrderController extends Controller
         });
 
         return back()->with('success', "Order {$order->number()} cancelled."
-            .($user->isAdmin() ? ' The store can now place a new order for that date.' : ''));
+            .($user->isManagement() ? ' The store can now place a new order for that date.' : ''));
     }
 
     /* ------------------------------------------------------------------ rules */
@@ -565,6 +583,8 @@ class OrderController extends Controller
         return [
             'id' => $o->id,
             'number' => $o->number(),
+            'reference' => $o->reference(),
+            'ecpos_state' => auth()->user()?->isManagement() ? $o->ecpos_state : null, // stores don't see ECPOS progress
             'ordered_by' => $o->user->name,
             'store' => $o->store ? ['id' => $o->store->id, 'code' => $o->store->code, 'name' => $o->store->name] : null,
             'status' => $o->status,

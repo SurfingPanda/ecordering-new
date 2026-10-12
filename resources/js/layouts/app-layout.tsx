@@ -13,11 +13,14 @@ import {
     LogOut,
     Menu,
     CalendarCheck,
+    TrendingUp,
     Package,
     PackageX,
     ShoppingBag,
     ReceiptText,
     Settings2,
+    Shuffle,
+    UserCog,
     ShoppingCart,
     Store,
     TableProperties,
@@ -39,6 +42,7 @@ interface NavItem {
     href: string;
     icon: LucideIcon;
     badge?: number; // a small count beside the label (e.g. stores that haven't ordered yet)
+    badgeTitle?: string;
 }
 
 /** Related pages are grouped under a small heading so the menu reads in sections instead of one long list. */
@@ -55,6 +59,7 @@ const adminNav: NavGroup[] = [
             { label: 'Today’s Orders', href: '/admin/today', icon: CalendarCheck },
             { label: 'All Store Orders', href: '/admin/consolidated', icon: TableProperties },
             { label: 'Orders (TRs)', href: '/orders', icon: ReceiptText },
+            { label: 'Ordering Trends', href: '/admin/trends', icon: TrendingUp },
         ],
     },
     {
@@ -63,13 +68,29 @@ const adminNav: NavGroup[] = [
             { label: 'Product Catalog', href: '/retails', icon: Package },
             { label: 'Archived Products', href: '/admin/archived-products', icon: Archive },
             { label: 'Categories', href: '/admin/categories', icon: Tags },
+            { label: 'Sync Rules', href: '/admin/sync-rules', icon: Shuffle },
         ],
     },
     {
         label: 'Manage',
         items: [
             { label: 'Stores', href: '/admin/stores', icon: Store },
+            { label: 'Area Managers', href: '/admin/area-managers', icon: UserCog },
             { label: 'Order Settings', href: '/admin/settings', icon: Settings2 },
+        ],
+    },
+];
+
+/** Area managers: the orders and reports of the stores they were given, nothing to configure. */
+const managerNav: NavGroup[] = [
+    { items: [{ label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard }] },
+    {
+        label: 'Orders',
+        items: [
+            { label: 'Today’s Orders', href: '/admin/today', icon: CalendarCheck },
+            { label: 'All Store Orders', href: '/admin/consolidated', icon: TableProperties },
+            { label: 'Orders (TRs)', href: '/orders', icon: ReceiptText },
+            { label: 'Ordering Trends', href: '/admin/trends', icon: TrendingUp },
         ],
     },
 ];
@@ -142,9 +163,19 @@ function Shell({ title, actions, children }: Props) {
     const [signingOut, setSigningOut] = useState(false);
     const [collapsed, setCollapsed] = useState(readCollapsed); // desktop rail
     const path = url.split('?')[0];
-    const baseNav = auth.user.role === 'admin' ? adminNav : storeNav;
+    const baseNav = auth.user.role === 'admin' ? adminNav : auth.user.role === 'area_manager' ? managerNav : storeNav;
     const waiting = ordering_today && ordering_today.open ? ordering_today.not_ordered : 0;
-    const nav = baseNav.map((g) => ({ ...g, items: g.items.map((i) => (i.href === '/admin/today' && waiting > 0 ? { ...i, badge: waiting } : i)) }));
+    const problems = ordering_today?.ecpos_problems ?? 0;
+    const nav = baseNav.map((g) => ({
+        ...g,
+        items: g.items.map((i) =>
+            i.href === '/admin/today' && waiting > 0
+                ? { ...i, badge: waiting }
+                : i.href === '/orders' && problems > 0 && auth.user.role !== 'store'
+                  ? { ...i, badge: problems, badgeTitle: `${problems} ${problems === 1 ? 'order needs' : 'orders need'} attention: not sent to ECPOS` }
+                  : i,
+        ),
+    }));
 
     useEffect(() => {
         try {
@@ -162,28 +193,28 @@ function Shell({ title, actions, children }: Props) {
 
     // compact = icon-only rail (desktop only; the mobile drawer is always full width)
     const renderSidebar = (compact: boolean) => {
-        const renderItem = ({ label, href, icon: Icon, badge }: NavItem) => {
+        const renderItem = ({ label, href, icon: Icon, badge, badgeTitle }: NavItem) => {
             const active = isActive(href);
             const itemClass = cn(
-                'group relative flex w-full items-center rounded-lg py-2 text-[15px] font-medium transition-colors',
+                'group relative flex w-full items-center rounded-lg py-[clamp(0rem,0.7vh,0.5rem)] text-[clamp(11px,1.6vh,15px)] font-medium transition-colors',
                 compact ? 'justify-center px-0' : 'gap-3 px-2.5',
                 active ? 'bg-white/[0.14] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)]' : 'text-white/70 hover:bg-white/[0.08] hover:text-white',
             );
             const inner = (
                 <>
                     {/* orange marker on the page you're on */}
-                    {active && <span aria-hidden="true" className="absolute -left-3 top-1/2 h-7 w-1 -translate-y-1/2 rounded-r-full bg-[#ff5000]" />}
+                    {active && <span aria-hidden="true" className="absolute -left-3 top-1/2 h-[clamp(0.8rem,2.8vh,1.75rem)] w-1 -translate-y-1/2 rounded-r-full bg-[#ff5000]" />}
                     <span
                         className={cn(
-                            'grid size-8 shrink-0 place-items-center rounded-md transition-colors',
+                            'grid size-[clamp(1.2rem,3.2vh,2rem)] shrink-0 place-items-center rounded-md transition-colors',
                             active ? 'bg-[#ff5000] text-white shadow-md shadow-black/20' : 'bg-white/[0.08] text-white/80 group-hover:bg-white/15 group-hover:text-white',
                         )}
                     >
-                        <Icon className="size-[18px]" />
+                        <Icon className="size-[clamp(12px,1.9vh,18px)]" />
                     </span>
                     <span className={cn(compact && 'sr-only')}>{label}</span>
                     {badge ? (
-                        <span className={cn('rounded-full bg-[#ff5000] px-1.5 text-[11px] font-semibold tabular-nums text-white', compact ? 'absolute right-1 top-1' : 'ml-auto')} title={`${badge} ${badge === 1 ? "store hasn’t" : "stores haven’t"} ordered yet`}>
+                        <span className={cn('rounded-full bg-[#ff5000] px-1.5 text-[11px] font-semibold tabular-nums text-white', compact ? 'absolute right-1 top-1' : 'ml-auto')} title={badgeTitle ?? `${badge} ${badge === 1 ? "store hasn’t" : "stores haven’t"} ordered yet`}>
                             {badge}
                         </span>
                     ) : null}
@@ -217,7 +248,7 @@ function Shell({ title, actions, children }: Props) {
         };
 
         const initial = auth.user.name.slice(0, 1);
-        const roleLabel = auth.user.role === 'admin' ? 'Administrator' : (auth.user.store?.name ?? auth.user.email);
+        const roleLabel = auth.user.role === 'admin' ? 'Administrator' : auth.user.role === 'area_manager' ? 'Area Manager' : (auth.user.store?.name ?? auth.user.email);
 
         return (
             <div className="relative flex h-full flex-col overflow-hidden bg-gradient-to-b from-[#06166f] via-[#0a2096] to-[#0b30c8] text-white">
@@ -229,27 +260,27 @@ function Shell({ title, actions, children }: Props) {
                 />
                 <div aria-hidden="true" className="pointer-events-none absolute -top-16 left-1/2 size-80 -translate-x-1/2 rounded-full bg-[radial-gradient(closest-side,rgba(130,160,255,0.5),transparent)]" />
 
-                <Link href="/dashboard" aria-label={`${appName} dashboard`} className={cn('relative flex justify-center', compact ? 'px-2 py-4' : 'px-4 pb-3 pt-5')}>
-                    <img src="/images/logo.png" alt={appName} className={cn('object-contain drop-shadow-[0_6px_14px_rgba(0,0,40,0.35)] transition-all', compact ? 'size-12' : 'size-40')} />
+                <Link href="/dashboard" aria-label={`${appName} dashboard`} className={cn('relative flex justify-center [@media(max-height:460px)]:hidden', compact ? 'px-2 py-[clamp(0.25rem,1.8vh,1rem)]' : 'px-4 pb-[clamp(0.15rem,1vh,0.75rem)] pt-[clamp(0.3rem,2.2vh,1.25rem)]')}>
+                    <img src="/images/logo.png" alt={appName} className={cn('object-contain drop-shadow-[0_6px_14px_rgba(0,0,40,0.35)] transition-all', compact ? 'size-[clamp(1.75rem,5.5vh,3rem)]' : 'size-[clamp(2.25rem,13vh,10rem)]')} />
                 </Link>
                 <div aria-hidden="true" className="relative mx-5 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
 
-                <nav className="relative flex-1 overflow-y-auto px-3 py-4" aria-label="Main">
+                <nav className="no-scrollbar relative min-h-0 flex-1 overflow-y-auto px-3 py-[clamp(0.15rem,1.5vh,1rem)]" aria-label="Main">
                     {nav.map((group, i) => (
-                        <div key={group.label ?? 'top'} className={cn(i > 0 && 'mt-5')}>
+                        <div key={group.label ?? 'top'} className={cn(i > 0 && 'mt-[clamp(0.2rem,1.9vh,1.25rem)]')}>
                             {group.label &&
                                 (compact ? (
-                                    <div aria-hidden="true" className="mx-3 mb-2 h-px bg-white/15" />
+                                    <div aria-hidden="true" className="mx-3 mb-[clamp(0.15rem,0.8vh,0.5rem)] h-px bg-white/15" />
                                 ) : (
-                                    <p className="mb-1.5 px-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/45">{group.label}</p>
+                                    <p className="mb-[clamp(0.1rem,0.6vh,0.375rem)] px-2.5 text-[clamp(9px,1.25vh,11px)] [@media(max-height:560px)]:hidden font-semibold uppercase tracking-[0.14em] text-white/45">{group.label}</p>
                                 ))}
-                            <div className="space-y-1">{group.items.map(renderItem)}</div>
+                            <div className="space-y-[clamp(0px,0.4vh,0.25rem)]">{group.items.map(renderItem)}</div>
                         </div>
                     ))}
                 </nav>
 
                 {/* who is signed in */}
-                <div className="relative p-3">
+                <div className="relative p-[clamp(0.25rem,1.3vh,0.75rem)]">
                     {compact ? (
                         <div className="flex flex-col items-center gap-2">
                             <Link href="/account" title={`My account — ${auth.user.name} (${auth.user.email})`} className="grid size-9 place-items-center rounded-full bg-[#ff5000] text-sm font-semibold uppercase shadow-md shadow-black/20">
@@ -266,9 +297,9 @@ function Shell({ title, actions, children }: Props) {
                             </button>
                         </div>
                     ) : (
-                        <div className="flex items-center gap-3 rounded-xl bg-white/10 p-2.5 ring-1 ring-inset ring-white/10 backdrop-blur-sm">
+                        <div className="flex items-center gap-3 rounded-xl bg-white/10 p-[clamp(0.25rem,1vh,0.625rem)] ring-1 ring-inset ring-white/10 backdrop-blur-sm">
                             <Link href="/account" onClick={() => setOpen(false)} title="My account — change your password" className="flex min-w-0 flex-1 items-center gap-3 rounded-lg hover:opacity-90">
-                                <div className="grid size-10 shrink-0 place-items-center rounded-full bg-[#ff5000] text-sm font-semibold uppercase shadow-md shadow-black/20">{initial}</div>
+                                <div className="grid size-[clamp(1.5rem,4.4vh,2.5rem)] shrink-0 place-items-center rounded-full bg-[#ff5000] text-sm font-semibold uppercase shadow-md shadow-black/20">{initial}</div>
                                 <div className="min-w-0 flex-1">
                                     <p className="truncate text-sm font-semibold leading-tight">{auth.user.name}</p>
                                     <p className="truncate text-xs text-white/65">{roleLabel}</p>
@@ -472,7 +503,7 @@ function DeadlineReminder({
     today,
     onPlaceOrder,
 }: {
-    role: 'admin' | 'store';
+    role: 'admin' | 'area_manager' | 'store';
     userId: number;
     deadline: DeadlineInfo | null;
     today: OrderingToday | null;
@@ -486,7 +517,7 @@ function DeadlineReminder({
     }, []);
 
     const store = role === 'store' && deadline && deadline.store_active && deadline.open && !deadline.ordered_today ? deadline : null;
-    const admin = role === 'admin' && today && today.open && today.not_ordered > 0 ? today : null;
+    const admin = role !== 'store' && today && today.open && today.not_ordered > 0 ? today : null;
     const at = store ? store.at : admin ? admin.deadline_at : null;
     const day = at ? at.slice(0, 10) : '';
     const minsLeft = at ? Math.ceil((new Date(at).getTime() - now) / 60_000) : null;

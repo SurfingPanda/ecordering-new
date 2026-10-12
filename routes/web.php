@@ -12,6 +12,12 @@ use App\Http\Controllers\OrderController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
+    // forgot password: a one-time link is emailed; every step is rate-limited
+    Route::get('/forgot-password', [\App\Http\Controllers\Auth\PasswordResetController::class, 'showRequest'])->name('password.request');
+    Route::post('/forgot-password', [\App\Http\Controllers\Auth\PasswordResetController::class, 'sendLink'])->middleware('throttle:5,1')->name('password.email');
+    Route::get('/reset-password/{token}', [\App\Http\Controllers\Auth\PasswordResetController::class, 'showReset'])->name('password.reset');
+    Route::post('/reset-password', [\App\Http\Controllers\Auth\PasswordResetController::class, 'reset'])->middleware('throttle:10,1')->name('password.update');
+
     Route::get('/login', [LoginController::class, 'show'])->name('login');
     Route::post('/login', [LoginController::class, 'store'])->middleware('throttle:60,1'); // generous per-IP cap; the real guess limit is per email + IP in LoginController
 });
@@ -50,6 +56,15 @@ Route::middleware('auth')->group(function () {
     // Cancel: admins only, and only a POSTED TR. Stores reset a pending order instead (see orders.reset).
     Route::post('/orders/{order}/cancel', [OrderController::class, 'cancel'])->whereNumber('order')->name('orders.cancel');
 
+    // Admins and area managers: the order reports. An area manager only ever gets the stores an admin gave them
+    // (every one of these reads User::visibleStoreIds()).
+    Route::middleware('role:admin,area_manager')->prefix('admin')->name('admin.')->group(function () {
+        Route::get('/today', \App\Http\Controllers\Admin\TodayController::class)->name('today');
+        Route::get('/trends', \App\Http\Controllers\Admin\TrendsController::class)->name('trends');
+        Route::get('/consolidated', [ConsolidatedOrderController::class, 'index'])->name('consolidated');
+        Route::get('/consolidated/export', [ConsolidatedOrderController::class, 'export'])->name('consolidated.export');
+    });
+
     // Admin only.
     Route::middleware('role:admin')->group(function () {
         // Items are archived and restored, never deleted (there is deliberately no delete route).
@@ -66,7 +81,12 @@ Route::middleware('auth')->group(function () {
         Route::post('/retails/ecpos-sync', \App\Http\Controllers\Admin\EcposSyncController::class)->name('retails.ecpos.sync');
 
         Route::prefix('admin')->name('admin.')->group(function () {
-            Route::get('/today', \App\Http\Controllers\Admin\TodayController::class)->name('today');
+            Route::get('/area-managers', [\App\Http\Controllers\Admin\AreaManagerController::class, 'index'])->name('area-managers');
+            Route::post('/area-managers', [\App\Http\Controllers\Admin\AreaManagerController::class, 'store'])->name('area-managers.store');
+            Route::put('/area-managers/{manager}', [\App\Http\Controllers\Admin\AreaManagerController::class, 'update'])->whereNumber('manager')->name('area-managers.update');
+            Route::put('/area-managers/{manager}/password', [\App\Http\Controllers\Admin\AreaManagerController::class, 'password'])->whereNumber('manager')->name('area-managers.password');
+            Route::delete('/area-managers/{manager}', [\App\Http\Controllers\Admin\AreaManagerController::class, 'destroy'])->whereNumber('manager')->name('area-managers.destroy');
+
             Route::get('/stores', [StoreController::class, 'index'])->name('stores.index');
             Route::post('/stores', [StoreController::class, 'store'])->name('stores.store');
             Route::get('/stores/{store}', [StoreController::class, 'show'])->name('stores.show');
@@ -76,6 +96,12 @@ Route::middleware('auth')->group(function () {
             Route::put('/stores/{store}/users/{user}/password', [StoreController::class, 'resetPassword'])->name('stores.users.password');
 
             Route::get('/archived-products', [ItemController::class, 'archived'])->name('archived');
+
+            Route::get('/sync-rules', [\App\Http\Controllers\Admin\CatalogRuleController::class, 'index'])->name('sync-rules');
+            Route::post('/sync-rules', [\App\Http\Controllers\Admin\CatalogRuleController::class, 'store'])->name('sync-rules.store');
+            Route::post('/sync-rules/apply', [\App\Http\Controllers\Admin\CatalogRuleController::class, 'apply'])->name('sync-rules.apply');
+            Route::put('/sync-rules/{rule}', [\App\Http\Controllers\Admin\CatalogRuleController::class, 'update'])->whereNumber('rule')->name('sync-rules.update');
+            Route::delete('/sync-rules/{rule}', [\App\Http\Controllers\Admin\CatalogRuleController::class, 'destroy'])->whereNumber('rule')->name('sync-rules.destroy');
 
             Route::get('/categories', [CategoryController::class, 'index'])->name('categories.index');
             Route::post('/categories', [CategoryController::class, 'store'])->name('categories.store');
@@ -88,8 +114,6 @@ Route::middleware('auth')->group(function () {
             Route::post('/settings/store-deadlines', [SubmissionSettingsController::class, 'saveStoreDeadline'])->name('settings.deadlines.save');
             Route::delete('/settings/store-deadlines/{deadline}', [SubmissionSettingsController::class, 'deleteStoreDeadline'])->name('settings.deadlines.delete');
 
-            Route::get('/consolidated', [ConsolidatedOrderController::class, 'index'])->name('consolidated');
-            Route::get('/consolidated/export', [ConsolidatedOrderController::class, 'export'])->name('consolidated.export');
         });
     });
 });

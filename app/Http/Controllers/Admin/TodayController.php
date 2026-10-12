@@ -11,7 +11,7 @@ use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
 
-/** "Today's Orders": which active stores have placed their order for a day and which haven't. */
+/** "Today's Orders": which active stores (an area manager's own stores) have placed their order for a day and which haven't. */
 class TodayController extends Controller
 {
     public function __invoke(Request $request, SubmissionDeadline $deadlines): Response
@@ -21,7 +21,8 @@ class TodayController extends Controller
         $date = $day->toDateString();
         $isToday = $date === CarbonImmutable::today()->toDateString();
 
-        $stores = Store::where('is_active', true)->withCount('users')->orderBy('name')->get();
+        $ids = $request->user()->visibleStoreIds(); // an area manager only sees the stores given to them
+        $stores = Store::where('is_active', true)->when($ids !== null, fn ($q) => $q->whereIn('id', $ids))->withCount('users')->orderBy('name')->get();
 
         // pending + posted orders for that day (cancelled ones don't count, the store may order again)
         $orders = Order::whereIn('status', Order::ACTIVE)->where('order_date', $date)->withUnits()->with('user:id,name')->orderBy('id')->get()->groupBy('store_id');

@@ -19,18 +19,28 @@ interface Props {
     order: OrderSummary & {
         notes: string | null;
         posted_at: string | null;
-        ecpos: { journal_id: string | null; sent_at: string; note: string | null } | null;
+        ecpos: {
+            state: 'queued' | 'sending' | 'sent' | 'failed';
+            journal_id: string | null;
+            sent_at: string | null;
+            note: string | null;
+            error: string | null;
+            uncertain: boolean;
+            attempts: number;
+            max_attempts: number;
+            next_at: string | null;
+        } | null;
         cancelled_at: string | null;
         cancelled_by: string | null;
         cancellation_reason: string | null;
         lines: { id: number; product_code: string; name: string; source: ItemSource; category: string | null; quantity: number }[];
-        events: { id: number; event: 'placed' | 'posted' | 'cancelled' | 'reset' | 'sent'; note: string | null; by: string | null; at: string }[];
+        events: { id: number; event: 'placed' | 'posted' | 'cancelled' | 'reset' | 'sent' | 'send_failed' | 'send_requested'; note: string | null; by: string | null; at: string }[];
     };
     can: { post: boolean; reset: boolean; cancel: boolean; cancel_needs_reason: boolean; send_ecpos: boolean };
 }
 
-const eventLabel = { placed: 'Placed', posted: 'Posted', cancelled: 'Cancelled', reset: 'Reset for editing', sent: 'Sent to ECPOS' } as const;
-const eventDot = { placed: 'bg-muted-foreground', posted: 'bg-[#16683a]', cancelled: 'bg-destructive', reset: 'bg-[#c27a00]', sent: 'bg-secondary' } as const;
+const eventLabel = { placed: 'Placed', posted: 'Posted', cancelled: 'Cancelled', reset: 'Reset for editing', sent: 'Sent to ECPOS', send_failed: 'ECPOS send failed', send_requested: 'Sent again to ECPOS' } as const;
+const eventDot = { placed: 'bg-muted-foreground', posted: 'bg-[#16683a]', cancelled: 'bg-destructive', reset: 'bg-[#c27a00]', sent: 'bg-secondary', send_failed: 'bg-destructive', send_requested: 'bg-[#c27a00]' } as const;
 
 /**
  * Reading order on this page:
@@ -72,7 +82,9 @@ export default function ShowOrder({ order, can }: Props) {
     const sendToEcpos = () =>
         confirm({
             title: `Send ${order.number} to ECPOS?`,
-            description: 'This order is posted but ECPOS doesn’t have it yet. It will be sent now, once.',
+            description: order.ecpos?.uncertain
+                ? 'ECPOS did not confirm the last attempt, so it may already have this order. Only send again if you have checked that it isn’t in ECPOS, or it could be created twice.'
+                : 'This order is posted but ECPOS doesn’t have it yet. It will be sent in the background, once.',
             confirmLabel: 'Send to ECPOS',
             onConfirm: () =>
                 router.post(
@@ -128,6 +140,11 @@ export default function ShowOrder({ order, can }: Props) {
                         <h2 className={cn('font-mono text-2xl font-semibold tracking-wide', cancelled && 'text-muted-foreground line-through decoration-1')}>{order.number}</h2>
                         <StatusBadge status={order.status} className="px-2.5 py-1 text-[13px]" />
                     </div>
+                    {order.reference !== order.number && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            Our reference <span className="font-mono">{order.reference}</span>
+                        </p>
+                    )}
                     <p className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-sm text-muted-foreground">
                         {order.store && (
                             <>
@@ -154,7 +171,7 @@ export default function ShowOrder({ order, can }: Props) {
                                 <Ban /> Cancel order
                             </Button>
                         )}
-                        {can.send_ecpos && (
+                        {can.send_ecpos && order.ecpos?.state !== 'failed' && (
                             <Button variant="ghost" className="border border-secondary text-secondary hover:bg-accent" onClick={sendToEcpos}>
                                 <CloudUpload /> Send to ECPOS
                             </Button>
@@ -173,7 +190,8 @@ export default function ShowOrder({ order, can }: Props) {
                 )}
             </header>
 
-            {order.ecpos && <EcposBanner orderId={order.id} ecpos={order.ecpos} />}
+            {order.ecpos && order.ecpos.state === 'sent' && order.ecpos.sent_at && <EcposBanner orderId={order.id} ecpos={{ ...order.ecpos, sent_at: order.ecpos.sent_at }} />}
+            {order.ecpos && order.ecpos.state !== 'sent' && <EcposProgress ecpos={order.ecpos} canResend={can.send_ecpos} onResend={sendToEcpos} />}
 
             {resetError && (
                 <p role="alert" className="mb-5 rounded-md border border-[#f0b8a6] bg-[#ffece6] px-4 py-3 text-sm text-[#9c2a00]">
@@ -303,6 +321,51 @@ export default function ShowOrder({ order, can }: Props) {
             {confirmDialog}
             <CancelDialog key={cancelling ? 'open' : 'closed'} open={cancelling} order={order} needsReason={can.cancel_needs_reason} onClose={() => setCancelling(false)} />
         </AppLayout>
+    );
+}
+
+/** Where an order is on its way to ECPOS while it isn't there yet: still sending (live), retrying, or failed (with a way to try again). */
+function EcposProgress({ ecpos, canResend, onResend }: { ecpos: NonNullable<Props['order']['ecpos']>; canResend: boolean; onResend: () => void }) {
+    const working = ecpos.state === 'queued' || ecpos.state === 'sending';
+
+    // while it's being sent, look again every few seconds so the page flips to "Sent to ECPOS" by itself
+    useEffect(() => {
+        if (!working) return;
+        const t = setInterval(() => router.reload({ only: ['order', 'can'] }), 3000);
+        return () => clearInterval(t);
+    }, [working]);
+
+    if (working) {
+        const retrying = ecpos.attempts > 0 && ecpos.error;
+        return (
+            <div role="status" className="mb-5 flex items-start gap-3 rounded-md border border-[#c9d4fa] bg-[#eef2ff] px-4 py-3 text-sm text-[#1f3aa8]">
+                <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />
+                <div>
+                    <p className="font-semibold">{retrying ? 'Trying again to send to ECPOS…' : 'Sending to ECPOS…'}</p>
+                    <p className="mt-0.5 text-xs text-[#1f3aa8]/80">
+                        {retrying
+                            ? `${ecpos.error} Attempt ${ecpos.attempts} of ${ecpos.max_attempts} didn’t go through; the next try is ${ecpos.next_at ? `at ${formatDate(ecpos.next_at)}` : 'shortly'}.`
+                            : 'The order is posted. It is being sent in the background and this page updates by itself.'}
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div role="alert" className="mb-5 flex flex-wrap items-start gap-3 rounded-md border border-[#f0b8a6] bg-[#ffece6] px-4 py-3 text-sm text-[#9c2a00]">
+            <div className="min-w-0 flex-1">
+                <p className="font-semibold">Couldn’t send this order to ECPOS</p>
+                <p className="mt-0.5 text-xs">{ecpos.error ?? 'ECPOS did not accept the order.'}</p>
+                {ecpos.uncertain && <p className="mt-1 text-xs font-semibold">ECPOS may already have this order. Check ECPOS before sending again, or it could be created twice.</p>}
+                <p className="mt-1 text-xs text-[#9c2a00]/80">The order itself is posted and safe.</p>
+            </div>
+            {canResend && (
+                <Button size="sm" variant="ghost" className="border border-[#9c2a00]/40 bg-white text-[#9c2a00] hover:bg-white" onClick={onResend}>
+                    <CloudUpload /> Try again
+                </Button>
+            )}
+        </div>
     );
 }
 

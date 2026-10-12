@@ -1,7 +1,7 @@
 export type ItemSource = 'bw_products' | 'warehouse' | 'merchandise' | 'rejects';
 export type RetailGroup = 'regular_product' | 'non_product';
 export type OrderStatus = 'pending' | 'posted' | 'cancelled';
-export type Role = 'admin' | 'store';
+export type Role = 'admin' | 'area_manager' | 'store';
 
 export interface Item {
     id: number;
@@ -27,6 +27,8 @@ export interface StoreRef {
 export interface OrderSummary {
     id: number;
     number: string;
+    reference: string; // our own per-store reference (TR-BW0018-000001)
+    ecpos_state: 'queued' | 'sending' | 'sent' | 'failed' | null; // where the order is on its way to ECPOS
     ordered_by: string;
     store: StoreRef | null;
     status: OrderStatus;
@@ -66,6 +68,7 @@ export interface OrderingToday {
     deadline_at: string;
     deadline_time: string;
     open: boolean;
+    ecpos_problems: number; // posted orders that didn't reach ECPOS (failed, or stuck in the queue)
 }
 
 export interface SharedProps {

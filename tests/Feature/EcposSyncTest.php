@@ -131,4 +131,26 @@ class EcposSyncTest extends TestCase
         foreach ([['merchandise', 'MERCHANDISE'], ['rejects', 'BW REJECTS'], ['bw_products', 'BW BREADS']] as [$src, $cat]) {
             $this->assertTrue(Category::where('source', $src)->where('name', $cat)->exists(), "$src has its category");
         }
-    }}
+    }
+
+    public function test_store_supplies_go_to_warehouse_and_stay_there_on_the_next_sync(): void
+    {
+        config(['ecpos.skip_groups' => []]);
+        $this->feed([$this->row('SUP-1', 'Box', 'STORE SUPPLIES'), $this->row('SUP-2', 'Tape', 'STORE SUPPLIES'), $this->row('ACC-SUP-086', 'Topper', 'BW PREM CAKES')]);
+        Item::create(['product_code' => 'SUP-1', 'description' => 'Box', 'source' => 'bw_products', 'category' => 'STORE SUPPLIES', 'retail_group' => 'non_product'])
+            ->forceFill(['synced_at' => now()])->save();
+        Item::create(['product_code' => 'HAND-1', 'description' => 'By hand', 'source' => 'warehouse', 'category' => 'X', 'retail_group' => 'non_product']);
+
+        $first = app(\App\Services\EcposCatalog::class)->sync();
+        $this->assertSame('warehouse', Item::where('product_code', 'SUP-1')->value('source')); // moved
+        $this->assertSame('warehouse', Item::where('product_code', 'SUP-2')->value('source')); // added there
+        $this->assertSame([2, 1], [$first['added'], $first['updated']]);
+        $this->assertSame('warehouse', Item::where('product_code', 'ACC-SUP-086')->value('source'));
+        $this->assertTrue(Category::where('source', 'warehouse')->where('name', 'STORE SUPPLIES')->exists());
+
+        $again = app(\App\Services\EcposCatalog::class)->sync(); // not duplicated, not archived
+        $this->assertSame([0, 0, 0], [$again['added'], $again['updated'], $again['archived']]);
+        $this->assertSame(1, Item::where('product_code', 'SUP-1')->count());
+        $this->assertNull(Item::where('product_code', 'HAND-1')->value('archived_at')); // hand-added warehouse item untouched
+    }
+}

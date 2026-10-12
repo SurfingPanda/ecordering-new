@@ -4,6 +4,7 @@ import { Search } from 'lucide-react';
 
 import CatalogUnits from '@/components/catalog-units';
 import NewOrderButton from '@/components/new-order-button';
+import EcposTag from '@/components/ecpos-tag';
 import { StatusBadge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import AppLayout from '@/layouts/app-layout';
@@ -32,7 +33,7 @@ const filters: { key: OrderStatus | null; label: string }[] = [
 
 export default function Orders({ orders, status, catalog, store, search, stores }: Props) {
     const { auth } = usePage<SharedProps>().props;
-    const isAdmin = auth.user.role === 'admin';
+    const isAdmin = auth.user.role !== 'store'; // admins and area managers: all their stores' orders, with a Store column
     const [query, setQuery] = useState(search);
 
     // one place builds the URL so changing one filter never drops the others
@@ -178,6 +179,7 @@ export default function Orders({ orders, status, catalog, store, search, stores 
                                     ))}
                                     <td className={td}>
                                         <StatusBadge status={o.status} />
+                                        <EcposTag state={o.ecpos_state} />
                                     </td>
                                 </tr>
                             ))}

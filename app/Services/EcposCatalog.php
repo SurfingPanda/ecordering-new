@@ -11,20 +11,17 @@ use RuntimeException;
 /**
  * Keeps the BW Products catalog in step with ECPOS (GET /items). Read-only towards ECPOS: it never sends anything.
  *
- *  - new ECPOS item            -> added as a BW Product (its group becomes the category); items in the
- *                                 MERCHANDISE and BW REJECTS groups go to the Merchandise / Rejects catalogs
+ *  - new ECPOS item            -> added to the catalog the Sync Rules say (BW Products when no rule matches); its ECPOS group becomes the category
  *  - changed name/group/type   -> updated
  *  - synced item gone from ECPOS -> archived (never deleted, old orders keep their items); comes back -> restored
- *  - items added by hand, and every Warehouse item, are left alone
+ *  - items added by hand (including hand-added Warehouse items) are left alone
  */
 class EcposCatalog
 {
     public const SOURCE = 'bw_products';
 
-    /** Catalogs the sync maintains (Warehouse is never touched), and which ECPOS item groups get their own catalog. */
+    /** Catalogs the sync maintains (in Warehouse only the items it put there itself). Which one an item goes to comes from the rules on the Sync Rules page (see CatalogRouter). */
     public const SOURCES = ['bw_products', 'merchandise', 'rejects'];
-
-    public const GROUP_CATALOG = ['MERCHANDISE' => 'merchandise', 'BW REJECTS' => 'rejects'];
 
     /** @return list<array{itemid: string, itemname: string, itemgroup: ?string, itemdepartment: ?string, moq: mixed}> */
     public function fetch(): array
@@ -42,6 +39,7 @@ class EcposCatalog
 
         $skipGroups = array_map('strtoupper', config('ecpos.skip_groups'));
         $wanted = [];
+        $router = new CatalogRouter;
         $skipped = 0;
         foreach ($feed as $row) {
             $code = trim((string) ($row['itemid'] ?? ''));
@@ -52,7 +50,7 @@ class EcposCatalog
                 continue;
             }
             $wanted[$code] = [
-                'source' => self::GROUP_CATALOG[strtoupper(trim((string) ($row['itemgroup'] ?? '')))] ?? self::SOURCE,
+                'source' => $router->sourceFor($code, (string) ($row['itemgroup'] ?? '')),
                 'description' => mb_substr($name, 0, 255),
                 'category' => mb_substr(trim((string) ($row['itemgroup'] ?? '')) ?: 'UNCATEGORISED', 0, 100),
                 'retail_group' => strtoupper(trim((string) ($row['itemdepartment'] ?? ''))) === 'REGULAR PRODUCT' ? 'regular_product' : 'non_product',
@@ -67,7 +65,7 @@ class EcposCatalog
         $stats = ['added' => 0, 'updated' => 0, 'archived' => 0, 'restored' => 0, 'unchanged' => 0, 'skipped' => $skipped, 'total' => count($wanted)];
 
         $run = function () use ($wanted, &$stats, $dryRun) {
-            $existing = Item::whereIn('source', self::SOURCES)->get()->keyBy('product_code');
+            $existing = Item::where(fn ($q) => $q->whereIn('source', self::SOURCES)->orWhere(fn ($w) => $w->where('source', 'warehouse')->whereNotNull('synced_at')))->get()->keyBy('product_code');
             $now = now();
 
             foreach ($wanted as $code => $data) {

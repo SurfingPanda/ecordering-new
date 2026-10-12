@@ -32,6 +32,7 @@ class Order extends Model
         'user_id', 'store_id', 'order_date', 'notes', 'status',
         'posted_at', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
         'ecpos_journal_id', 'ecpos_sent_at', 'ecpos_note',
+        'ecpos_state', 'ecpos_attempts', 'ecpos_error', 'ecpos_uncertain', 'ecpos_state_at', 'ecpos_next_at',
     ];
 
     protected function casts(): array
@@ -39,6 +40,9 @@ class Order extends Model
         return [
             'posted_at' => 'datetime',
             'ecpos_sent_at' => 'datetime',
+            'ecpos_state_at' => 'datetime',
+            'ecpos_next_at' => 'datetime',
+            'ecpos_uncertain' => 'boolean',
             'cancelled_at' => 'datetime',
         ];
     }
@@ -67,10 +71,12 @@ class Order extends Model
             ->withSum(['lines as rejects_units' => fn ($q) => $q->where('source', 'rejects')], 'quantity');
     }
 
-    /** Admins see every store's orders; a store account only ever sees its own. */
+    /** Admins see every store's orders; an area manager the stores given to them; a store account only its own. */
     public function scopeVisibleTo(Builder $query, User $user): Builder
     {
-        return $user->isAdmin() ? $query : $query->where('orders.store_id', $user->store_id ?? 0);
+        $ids = $user->visibleStoreIds();
+
+        return $ids === null ? $query : $query->whereIn('orders.store_id', $ids);
     }
 
     /**
@@ -139,9 +145,28 @@ class Order extends Model
         });
     }
 
+    /**
+     * The TR number people see. Once the order is in ECPOS it is "TR" + ECPOS's journal ID (e.g. TR4700000005), the same
+     * number ECPOS uses. Until then (a draft or pending order) it is our own per-store reference, see reference().
+     */
     public function number(): string
     {
+        return self::displayNumber($this->ecpos_journal_id, $this->tr_number, $this->id);
+    }
+
+    /** Our own per-store reference (TR-BW0018-000001): reserved when the order is started and never changes. */
+    public function reference(): string
+    {
         return $this->tr_number ?: 'TR'.str_pad((string) $this->id, 12, '0', STR_PAD_LEFT);
+    }
+
+    public static function displayNumber(?string $journalId, ?string $reference, int|string|null $id = null): string
+    {
+        if ($journalId !== null && $journalId !== '') {
+            return 'TR'.$journalId;
+        }
+
+        return $reference ?: 'TR'.str_pad((string) $id, 12, '0', STR_PAD_LEFT);
     }
 
     /** Appends a row to the order's audit trail. */

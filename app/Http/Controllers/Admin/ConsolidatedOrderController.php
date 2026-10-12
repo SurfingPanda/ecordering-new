@@ -38,6 +38,9 @@ class ConsolidatedOrderController extends Controller
         'submitted' => 'orders.posted_at',
     ];
 
+    /** The stores this person may see (null = all). Set per request; every query below goes through base(), so none can leak another store. */
+    private ?array $scope = null;
+
     public function index(Request $request): Response
     {
         $f = $this->filters($request);
@@ -51,7 +54,7 @@ class ConsolidatedOrderController extends Controller
         } else {
             $detail = (clone $base)
                 ->select([
-                    'orders.id as order_id', 'orders.tr_number', 'orders.order_date', 'orders.status', 'orders.posted_at', 'orders.created_at as placed_at',
+                    'orders.id as order_id', 'orders.tr_number', 'orders.ecpos_journal_id', 'orders.order_date', 'orders.status', 'orders.posted_at', 'orders.created_at as placed_at',
                     'stores.code as store_code', 'stores.name as store_name',
                     'order_items.product_code', 'order_items.name', 'order_items.category', 'order_items.source', 'order_items.quantity',
                 ])
@@ -61,7 +64,7 @@ class ConsolidatedOrderController extends Controller
                 ->withQueryString()
                 ->through(fn ($r) => [
                     'order_id' => $r->order_id,
-                    'number' => $r->tr_number ?: 'TR'.str_pad((string) $r->order_id, 12, '0', STR_PAD_LEFT),
+                    'number' => Order::displayNumber($r->ecpos_journal_id, $r->tr_number, $r->order_id),
                     'order_date' => CarbonImmutable::parse($r->order_date)->toDateString(),
                     'store_code' => $r->store_code,
                     'store_name' => $r->store_name,
@@ -81,7 +84,7 @@ class ConsolidatedOrderController extends Controller
             'summary' => $this->summary($f),
             'detail' => $detail,
             'pivot' => $pivot,
-            'stores' => Store::orderBy('name')->get(['id', 'code', 'name']),
+            'stores' => Store::when($this->scope !== null, fn ($q) => $q->whereIn('id', $this->scope))->orderBy('name')->get(['id', 'code', 'name']),
             'today' => today()->toDateString(),
         ]);
     }
@@ -108,13 +111,13 @@ class ConsolidatedOrderController extends Controller
             } else {
                 fputcsv($out, ['Order Date', 'TR Number', 'Store Code', 'Store', 'Product Code', 'Product', 'Category', 'Item Type', 'Quantity', 'Status', 'Submitted At']);
                 $this->base($f)
-                    ->select(['orders.id as order_id', 'orders.tr_number', 'orders.order_date', 'orders.status', 'orders.posted_at', 'stores.code as store_code', 'stores.name as store_name',
+                    ->select(['orders.id as order_id', 'orders.tr_number', 'orders.ecpos_journal_id', 'orders.order_date', 'orders.status', 'orders.posted_at', 'stores.code as store_code', 'stores.name as store_name',
                         'order_items.product_code', 'order_items.name', 'order_items.category', 'order_items.source', 'order_items.quantity'])
                     ->orderBy(self::SORTS[$f['sort']], $f['dir'])->orderBy('orders.id')->orderBy('order_items.id')
                     ->chunk(500, function ($rows) use ($out) {
                         foreach ($rows as $r) {
                             fputcsv($out, [
-                                CarbonImmutable::parse($r->order_date)->toDateString(), $r->tr_number ?: 'TR'.str_pad((string) $r->order_id, 12, '0', STR_PAD_LEFT),
+                                CarbonImmutable::parse($r->order_date)->toDateString(), Order::displayNumber($r->ecpos_journal_id, $r->tr_number, $r->order_id),
                                 $this->csv($r->store_code), $this->csv($r->store_name), $this->csv($r->product_code), $this->csv($r->name), $this->csv($r->category),
                                 Item::SINGULAR[$r->source] ?? $r->source, $r->quantity, $r->status,
                                 $r->posted_at ? CarbonImmutable::parse($r->posted_at)->format('Y-m-d H:i') : '',
@@ -132,6 +135,7 @@ class ConsolidatedOrderController extends Controller
     /** Validated, normalised filters (anything unrecognised falls back to a safe default). */
     private function filters(Request $request): array
     {
+        $this->scope = $request->user()->visibleStoreIds();
         $date = fn (?string $v, string $fallback) => $v && preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) && strtotime($v) !== false ? $v : $fallback;
         $today = today()->toDateString();
 
@@ -164,12 +168,15 @@ class ConsolidatedOrderController extends Controller
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->leftJoin('stores', 'stores.id', '=', 'orders.store_id')
             ->where('orders.status', '!=', Order::DRAFT)
+            ->when($this->scope !== null, fn ($q) => $q->whereIn('orders.store_id', $this->scope))
             ->whereBetween('orders.order_date', [$f['from'], $f['to']])
             ->when($f['store'], fn ($q, $v) => $q->where('orders.store_id', $v))
             ->when($f['status'], fn ($q, $v) => $q->where('orders.status', $v))
             ->when($f['type'], fn ($q, $v) => $q->where('order_items.source', $v))
             // "TR-BW0018-000001", "BW0018" or "000001" all work
-            ->when($f['ref'] !== '', fn ($q) => $q->where('orders.tr_number', 'like', '%'.$f['ref'].'%'))
+            ->when($f['ref'] !== '', fn ($q) => $q->where(fn ($q) => $q
+                ->where('orders.tr_number', 'like', '%'.$f['ref'].'%')
+                ->orWhere('orders.ecpos_journal_id', 'like', '%'.preg_replace('/^tr/i', '', $f['ref']).'%')))
             ->when($f['product'] !== '', fn ($q) => $q->where(fn ($q) => $q
                 ->where('order_items.name', 'like', '%'.$f['product'].'%')
                 ->orWhere('order_items.product_code', 'like', '%'.$f['product'].'%')));

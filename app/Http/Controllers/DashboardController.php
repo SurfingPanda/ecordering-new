@@ -18,13 +18,13 @@ class DashboardController extends Controller
     /** Orders that count as "ordered" in reports: every placed order (pending or posted). */
     private const COUNTED = Order::ACTIVE;
 
-    /** Set for store accounts so every figure is limited to their own store; null for admins (all stores). */
-    private ?int $storeId = null;
+    /** Set for store accounts (their own store) and area managers (their stores) so every figure is limited to them; null for admins (all stores). */
+    private ?array $storeIds = null;
 
     public function __invoke(Request $request): Response
     {
         $user = $request->user();
-        $this->storeId = $user->isStore() ? ($user->store_id ?? 0) : null;
+        $this->storeIds = $user->visibleStoreIds();
 
         $days = in_array((int) $request->query('range'), self::RANGES, true) ? (int) $request->query('range') : 30;
 
@@ -39,7 +39,7 @@ class DashboardController extends Controller
             'kpis' => [
                 'orders' => $this->kpi($this->orderCount($start, $end), $this->orderCount($prevStart, $prevEnd)),
                 'units' => $this->kpi($this->unitCount($start, $end), $this->unitCount($prevStart, $prevEnd)),
-                'pending' => Order::where('status', 'pending')->when($this->storeId !== null, fn ($q) => $q->where('store_id', $this->storeId))->count(),
+                'pending' => Order::where('status', 'pending')->when($this->storeIds !== null, fn ($q) => $q->whereIn('store_id', $this->storeIds))->count(),
                 'items_ordered' => $this->lines($start, $end)->distinct()->count('order_items.product_code'),
             ],
             'daily' => $this->daily($start, $days),
@@ -47,7 +47,7 @@ class DashboardController extends Controller
             'top_items' => collect(Item::SOURCES)->mapWithKeys(fn (string $s) => [$s => $this->topItems($start, $end, $s)])->all(),
             'top_categories' => $this->topCategories($start, $end),
             'not_ordered' => $this->notOrdered($start, $end),
-            'scope' => $this->storeId === null ? 'all' : 'store',
+            'scope' => $user->isStore() ? 'store' : 'all', // 'all' = several stores, so the lists show a Store column
             'recent' => Order::with(['user:id,name', 'store:id,code,name'])->visibleTo($user)
                 ->where('status', '!=', Order::DRAFT)
                 ->withUnits()
@@ -76,13 +76,13 @@ class DashboardController extends Controller
         return OrderItem::query()
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->whereIn('orders.status', self::COUNTED)
-            ->when($this->storeId !== null, fn ($q) => $q->where('orders.store_id', $this->storeId))
+            ->when($this->storeIds !== null, fn ($q) => $q->whereIn('orders.store_id', $this->storeIds))
             ->whereBetween('orders.order_date', [$from->toDateString(), $to->toDateString()]);
     }
 
     private function orderCount(CarbonImmutable $from, CarbonImmutable $to): int
     {
-        return Order::whereIn('status', self::COUNTED)->when($this->storeId !== null, fn ($q) => $q->where('store_id', $this->storeId))->whereBetween('order_date', [$from->toDateString(), $to->toDateString()])->count();
+        return Order::whereIn('status', self::COUNTED)->when($this->storeIds !== null, fn ($q) => $q->whereIn('store_id', $this->storeIds))->whereBetween('order_date', [$from->toDateString(), $to->toDateString()])->count();
     }
 
     private function unitCount(CarbonImmutable $from, CarbonImmutable $to): int

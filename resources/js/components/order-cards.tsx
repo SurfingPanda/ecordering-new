@@ -1,5 +1,6 @@
 import { Link } from '@inertiajs/react';
 
+import EcposTag from '@/components/ecpos-tag';
 import { StatusBadge } from '@/components/ui/badge';
 import { catalogColor, catalogLabel, catalogUnitsKey, catalogs, nf } from '@/lib/charts';
 import { formatDay } from '@/lib/format';
@@ -22,7 +23,10 @@ export default function OrderCards({ orders, showStore, empty }: { orders: Order
                             <Link href={`/orders/${o.id}`} className="py-0.5 font-mono text-[14px] font-semibold text-secondary">
                                 {o.number}
                             </Link>
-                            <StatusBadge status={o.status} />
+                            <span className="flex shrink-0 items-center">
+                                <StatusBadge status={o.status} />
+                                <EcposTag state={o.ecpos_state} />
+                            </span>
                         </div>
                         <p className="mt-0.5 text-xs text-muted-foreground">
                             {showStore && o.store ? `${o.store.name} · ` : ''}

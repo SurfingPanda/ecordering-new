@@ -15,12 +15,12 @@ class EcposOrders
     }
 
     /**
-     * Builds the request and sends it. Throws a RuntimeException with a message fit to show the user when the order
-     * can't be sent; the caller then leaves the TR pending so it can be posted again.
+     * Works out what would be sent and checks the order can be sent at all. Throws a RuntimeException with a message fit
+     * to show the user when it can't (store not linked to ECPOS, no ECPOS items); posting is refused up front in that case.
      *
-     * @return array{journal_id: ?string, note: ?string, raw: array<int|string, mixed>}
+     * @return array{payload: array<string, mixed>, note: ?string}
      */
-    public function send(Order $order): array
+    public function prepare(Order $order): array
     {
         $order->loadMissing(['store', 'user', 'lines']);
 
@@ -40,18 +40,31 @@ class EcposOrders
 
         $note = $left->isEmpty() ? null : 'Not sent to ECPOS (not ECPOS items): '.$left->map(fn ($l) => "{$l->product_code} ×{$l->quantity}")->implode(', ');
 
-        $payload = [
-            'store' => $storeId,
-            'staff' => $order->user?->name,
-            'description' => trim($order->number().($order->notes ? ' — '.$order->notes : '')),
-            'items' => $sendable->groupBy('product_code')->map(fn ($g, $code) => ['itemid' => (string) $code, 'qty' => (int) $g->sum('quantity')])->values()->all(),
+        return [
+            'payload' => [
+                'store' => $storeId,
+                'staff' => $order->user?->name,
+                'description' => trim($order->reference().($order->notes ? ' — '.$order->notes : '')),
+                'items' => $sendable->groupBy('product_code')->map(fn ($g, $code) => ['itemid' => (string) $code, 'qty' => (int) $g->sum('quantity')])->values()->all(),
+            ],
+            'note' => $note,
         ];
+    }
+
+    /**
+     * Sends the order (used by the background job). Throws EcposRequestException when ECPOS can't take it, with flags
+     * saying whether a retry is safe.
+     *
+     * @return array{journal_id: ?string, note: ?string, raw: array<int|string, mixed>}
+     */
+    public function send(Order $order): array
+    {
+        ['payload' => $payload, 'note' => $note] = $this->prepare($order);
 
         $answer = app(EcposClient::class)->post('', $payload);
 
         return ['journal_id' => $this->journalId($answer), 'note' => $note, 'raw' => $answer];
     }
-
     /**
      * What ECPOS says about an order we already sent (GET /{journalid}). Cached for a short time so a page that is
      * refreshed repeatedly doesn't hammer ECPOS.

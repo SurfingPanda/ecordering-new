@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useForm } from '@inertiajs/react';
 import Swal from 'sweetalert2';
-import { ArrowLeft, Check, Copy, Loader2, Minus, Plus, Search, X } from 'lucide-react';
+import { ArrowLeft, Check, Copy, Loader2, Minus, Plus, Search, WifiOff, X } from 'lucide-react';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -30,6 +30,41 @@ interface Saved {
     lines: { item_id: number; quantity: number }[];
 }
 
+/** Unsaved changes are kept on this device until the server has them, so a dropped connection (or a closed tab) loses nothing. */
+const backupKey = (orderId: number) => `bw-draft-${orderId}`;
+const readBackup = (orderId: number): { qty: Record<number, number>; notes: string } | null => {
+    try {
+        const raw = localStorage.getItem(backupKey(orderId));
+        return raw ? JSON.parse(raw) : null;
+    } catch {
+        return null;
+    }
+};
+const writeBackup = (orderId: number, value: { qty: Record<number, number>; notes: string } | null) => {
+    try {
+        if (value) localStorage.setItem(backupKey(orderId), JSON.stringify(value));
+        else localStorage.removeItem(backupKey(orderId));
+    } catch {
+        /* storage unavailable: the server copy still works while online */
+    }
+};
+
+function useOnline() {
+    const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+    useEffect(() => {
+        const up = () => setOnline(true);
+        const down = () => setOnline(false);
+        window.addEventListener('online', up);
+        window.addEventListener('offline', down);
+        return () => {
+            window.removeEventListener('online', up);
+            window.removeEventListener('offline', down);
+        };
+    }, []);
+
+    return online;
+}
+
 const xsrf = () => decodeURIComponent(document.cookie.split('; ').find((c) => c.startsWith('XSRF-TOKEN='))?.split('=')[1] ?? '');
 
 export default function CreateOrder({ order, items, blocked, saved }: { order: { id: number; number: string; order_date: string }; items: CatalogItem[]; blocked: string | null; saved: Saved }) {
@@ -38,15 +73,18 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
     const [category, setCategory] = useState('');
     const [selectedOnly, setSelectedOnly] = useState(false);
     // start from whatever was autosaved on this draft, so leaving the page and coming back keeps the order
-    const [qty, setQty] = useState<Record<number, number>>(() => Object.fromEntries(saved.lines.map((l) => [l.item_id, l.quantity])));
+    // a backup on this device means the last changes never reached the server: those win over the server's copy
+    const backup = useRef(readBackup(order.id));
+    const [qty, setQty] = useState<Record<number, number>>(() => backup.current?.qty ?? Object.fromEntries(saved.lines.map((l) => [l.item_id, l.quantity])));
+    const online = useOnline();
     const inputs = useRef<Record<number, HTMLInputElement | null>>({});
 
-    const form = useForm({ order_date: order.order_date, notes: saved.notes });
+    const form = useForm({ order_date: order.order_date, notes: backup.current?.notes ?? saved.notes });
 
     // ---- autosave: debounce changes to the draft, and flush right away when leaving the page ----
-    const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(saved.lines.length > 0 ? 'saved' : 'idle');
+    const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(backup.current ? 'saving' : saved.lines.length > 0 ? 'saved' : 'idle');
     const latest = useRef({ qty, date: form.data.order_date, notes: form.data.notes });
-    const dirty = useRef(false);
+    const dirty = useRef(backup.current !== null);
     const submitting = useRef(false);
     const first = useRef(true);
 
@@ -70,6 +108,7 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
         })
             .then((r) => {
                 if (!r.ok) throw new Error(String(r.status));
+                if (!dirty.current) writeBackup(order.id, null); // the server has everything
                 setSaveState(dirty.current ? 'saving' : 'saved');
             })
             .catch(() => {
@@ -80,6 +119,7 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
 
     useEffect(() => {
         latest.current = { qty, date: form.data.order_date, notes: form.data.notes };
+        if (!first.current) writeBackup(order.id, { qty, notes: form.data.notes }); // on this device first, then on the server
         if (first.current) {
             first.current = false;
             return;
@@ -90,6 +130,25 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
         return () => clearTimeout(t);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [qty, form.data.order_date, form.data.notes]);
+
+    // changes left over from an earlier visit go to the server now; and whenever the connection comes back, anything unsaved goes up
+    useEffect(() => {
+        if (dirty.current) void flush();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (online && dirty.current) void flush();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [online]);
+
+    // a failed save is tried again every few seconds while the page is open
+    useEffect(() => {
+        if (saveState !== 'error') return;
+        const t = setInterval(() => void flush(), 8000);
+        return () => clearInterval(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [saveState]);
 
     useEffect(() => {
         const onHide = () => void flush(true);
@@ -207,12 +266,12 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
             lines: selected.map((i) => ({ item_id: i.id, quantity: qty[i.id] })),
         }));
         submitting.current = true;
-        form.post('/orders', { onError: () => (submitting.current = false) });
+        form.post('/orders', { onSuccess: () => writeBackup(order.id, null), onError: () => (submitting.current = false) });
     };
 
     const lineError = (form.errors as Record<string, string>).lines ?? Object.entries(form.errors).find(([k]) => k.startsWith('lines.'))?.[1];
     // `blocked` is the server's reason ordering is closed (deadline passed / store deactivated); the server re-checks on submit
-    const canSubmit = selected.length > 0 && !form.processing && !blocked;
+    const canSubmit = selected.length > 0 && !form.processing && !blocked && online;
     const closedMessage = blocked ?? (form.errors as Record<string, string>).deadline;
 
     return (
@@ -223,7 +282,7 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
                     <p className="hidden text-sm text-muted-foreground sm:block">
                         Order ID <span className="ml-1 font-mono font-semibold tracking-wide text-foreground">{order.number}</span>
                     </p>
-                    <SaveStatus state={saveState} />
+                    <SaveStatus state={saveState} online={online} />
                     <Button asChild variant="ghost" size="sm">
                         <Link href="/orders">
                             <ArrowLeft /> Back to orders
@@ -232,6 +291,14 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
                 </>
             }
         >
+            {!online && (
+                <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-md border border-[#f0b8a6] bg-[#ffece6] px-4 py-3 text-sm text-[#9c2a00]">
+                    <WifiOff className="mt-0.5 size-4 shrink-0" />
+                    <p>
+                        <span className="font-semibold">No internet connection.</span> Keep entering quantities: they are kept on this device and sent as soon as you are back online. You can place the order once you are connected.
+                    </p>
+                </div>
+            )}
             <form id="order-form" onSubmit={submit} noValidate className="grid items-start gap-4 pb-20 sm:gap-5 xl:grid-cols-[1fr_340px] xl:pb-0">
                 <section className={cn(panel, 'min-w-0')}>
                     <div className="space-y-3 border-b border-border p-3 sm:p-4">
@@ -467,7 +534,8 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
     );
 }
 
-function SaveStatus({ state }: { state: 'idle' | 'saving' | 'saved' | 'error' }) {
+function SaveStatus({ state, online }: { state: 'idle' | 'saving' | 'saved' | 'error'; online: boolean }) {
+    if (!online) return <p role="status" className="flex items-center gap-1.5 text-xs font-medium text-destructive"><WifiOff className="size-3.5" /> Offline: saved on this device</p>;
     if (state === 'idle') return null;
 
     return (
@@ -482,7 +550,7 @@ function SaveStatus({ state }: { state: 'idle' | 'saving' | 'saved' | 'error' })
                     <Check className="size-3.5 text-[#16683a]" /> Draft saved
                 </>
             )}
-            {state === 'error' && 'Couldn’t save — check your connection'}
+            {state === 'error' && 'Couldn’t save yet: trying again…'}
         </p>
     );
 }
