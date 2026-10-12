@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { router, useForm } from '@inertiajs/react';
-import { KeyRound, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { KeyRound, Pencil, Plus, Search, Trash2, UserCheck, UserX } from 'lucide-react';
 
 import { useConfirm } from '@/components/confirm-dialog';
 import { Field } from '@/components/store-form-dialog';
@@ -22,6 +22,7 @@ interface Manager {
     id: number;
     name: string;
     email: string;
+    active: boolean;
     stores: StoreRef[];
 }
 
@@ -36,6 +37,19 @@ type Editing = { kind: 'new' } | { kind: 'edit'; manager: Manager } | { kind: 'p
 export default function AreaManagers({ managers, stores }: Props) {
     const [editing, setEditing] = useState<Editing>(null);
     const [confirm, confirmDialog] = useConfirm();
+
+    const setActive = (m: Manager, active: boolean) => {
+        const send = () => router.put(`/admin/area-managers/${m.id}/status`, { active }, { preserveScroll: true });
+        if (active) return send();
+        confirm({
+            title: `Deactivate ${m.name}?`,
+            description: 'They are signed out right away and can no longer sign in.',
+            note: <>Their account and the stores they handle are kept, so you can reactivate them later.</>,
+            tone: 'danger',
+            confirmLabel: 'Deactivate',
+            onConfirm: send,
+        });
+    };
 
     const remove = (m: Manager) =>
         confirm({
@@ -82,7 +96,10 @@ export default function AreaManagers({ managers, stores }: Props) {
                             {managers.map((m) => (
                                 <tr key={m.id} className="border-b border-border/70 align-top odd:bg-white even:bg-[#f8f9fc]">
                                     <td className={td}>
-                                        <p className="font-semibold">{m.name}</p>
+                                        <p className={cn('font-semibold', !m.active && 'text-muted-foreground line-through')}>
+                                            {m.name}
+                                            {!m.active && <span className="ml-2 rounded bg-[#fde4e0] px-1.5 py-0.5 align-middle text-xs font-semibold text-[#a3261a] no-underline">Deactivated</span>}
+                                        </p>
                                         <p className="text-xs text-muted-foreground">{m.email}</p>
                                     </td>
                                     <td className={td}>
@@ -104,6 +121,16 @@ export default function AreaManagers({ managers, stores }: Props) {
                                         </Button>
                                         <Button variant="ghost" size="sm" onClick={() => setEditing({ kind: 'password', manager: m })} title="Reset password" aria-label={`Reset password for ${m.name}`}>
                                             <KeyRound />
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setActive(m, !m.active)}
+                                            title={m.active ? 'Deactivate login' : 'Reactivate login'}
+                                            aria-label={`${m.active ? 'Deactivate' : 'Reactivate'} ${m.name}`}
+                                            className={m.active ? '' : 'text-secondary'}
+                                        >
+                                            {m.active ? <UserX /> : <UserCheck />}
                                         </Button>
                                         <Button
                                             variant="ghost"

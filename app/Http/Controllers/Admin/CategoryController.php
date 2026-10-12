@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Category;
 use App\Models\Item;
 use Illuminate\Http\RedirectResponse;
+use App\Support\Activity;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -39,6 +40,7 @@ class CategoryController extends Controller
     {
         $data = $this->validated($request);
         Category::create($data);
+        Activity::log('category_changed', $data['name'], 'Added to '.$this->catalogName($data['source']));
 
         return back()->with('success', "{$data['name']} added to ".$this->catalogName($data['source']).'.');
     }
@@ -54,6 +56,10 @@ class CategoryController extends Controller
             $category->update(['name' => $data['name']]);
         });
 
+        if ($old !== $data['name']) {
+            Activity::log('category_changed', $old, "Renamed to {$data['name']}");
+        }
+
         return back()->with('success', $old === $data['name'] ? 'No changes.' : "Renamed {$old} to {$data['name']}.");
     }
 
@@ -63,6 +69,7 @@ class CategoryController extends Controller
      */
     public function destroy(Category $category): RedirectResponse
     {
+        Activity::log('category_changed', $category->name, 'Deleted');
         $moved = DB::transaction(function () use ($category) {
             $moved = Item::where('source', $category->source)->where('category', $category->name)->update(['category' => null]);
             $category->delete();

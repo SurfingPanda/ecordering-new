@@ -3,6 +3,7 @@ import { Link, useForm } from '@inertiajs/react';
 import Swal from 'sweetalert2';
 import { ArrowLeft, Check, Copy, Loader2, Minus, Plus, Search, WifiOff, X } from 'lucide-react';
 
+import { useConfirm } from '@/components/confirm-dialog';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -231,6 +232,8 @@ export default function CreateOrder({ order, items, blocked, saved, staff }: { o
         [items, tab],
     );
 
+    const [confirm, confirmDialog] = useConfirm();
+
     const selected = items.filter((i) => (qty[i.id] ?? 0) > 0);
     const belowMin = selected.filter((i) => i.moq && qty[i.id] < i.moq);
     const totalUnits = selected.reduce((sum, i) => sum + qty[i.id], 0);
@@ -293,7 +296,7 @@ export default function CreateOrder({ order, items, blocked, saved, staff }: { o
             actions={
                 <>
                     <p className="hidden text-sm text-muted-foreground sm:block">
-                        Order ID <span className="ml-1 font-mono font-semibold tracking-wide text-foreground">{order.number}</span>
+                        Reference <span className="ml-1 font-mono font-semibold tracking-wide text-foreground">{order.number}</span>
                     </p>
                     <SaveStatus state={saveState} online={online} />
                     <Button asChild variant="ghost" size="sm">
@@ -464,7 +467,17 @@ export default function CreateOrder({ order, items, blocked, saved, staff }: { o
                             Your order <span className="ml-1 font-mono text-xs font-medium text-muted-foreground">{order.number}</span>
                         </h2>
                         {selected.length > 0 && (
-                            <button type="button" onClick={() => setQty({})} className="text-xs font-medium text-muted-foreground hover:text-destructive">
+                            <button type="button" onClick={() =>
+                                    confirm({
+                                        title: 'Clear all items?',
+                                        description: `This removes all ${selected.length} ${selected.length === 1 ? 'item' : 'items'} (${totalUnits} units) from your order.`,
+                                        note: 'The order itself and its notes are kept. You can add items again afterwards.',
+                                        tone: 'danger',
+                                        confirmLabel: 'Clear all',
+                                        onConfirm: () => setQty({}),
+                                    })
+                                }
+                                className="text-xs font-medium text-muted-foreground hover:text-destructive">
                                 Clear all
                             </button>
                         )}
@@ -584,6 +597,7 @@ export default function CreateOrder({ order, items, blocked, saved, staff }: { o
                     </Button>
                 </div>
             </form>
+            {confirmDialog}
         </AppLayout>
     );
 }

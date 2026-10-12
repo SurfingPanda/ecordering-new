@@ -9,6 +9,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Password;
+use App\Support\Activity;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -27,7 +28,8 @@ class PasswordResetController extends Controller
 
         // The answer is always the same, so nobody can use this form to find out which emails have an account.
         // (Laravel also refuses to send a second link to the same account within a minute.)
-        Password::sendResetLink(['email' => Str::lower($data['email'])]);
+        Password::sendResetLink(['email' => Str::lower($data['email']), 'deactivated_at' => null]); // a deactivated login gets no link
+        Activity::log('password_reset_requested', Str::lower($data['email']));
 
         return back()->with('success', 'If that email belongs to an account, we have sent a link to choose a new password. It works for '.config('auth.passwords.users.expire').' minutes. If you do not see it, check your spam folder.');
     }
@@ -49,7 +51,7 @@ class PasswordResetController extends Controller
         ]);
 
         $status = Password::reset(
-            ['email' => Str::lower($data['email']), 'password' => $data['password'], 'token' => $data['token']],
+            ['email' => Str::lower($data['email']), 'deactivated_at' => null, 'password' => $data['password'], 'token' => $data['token']],
             function (User $user, string $password) {
                 $user->forceFill(['password' => $password, 'remember_token' => Str::random(60)])->save();
 
@@ -58,6 +60,7 @@ class PasswordResetController extends Controller
                     DB::table(config('session.table', 'sessions'))->where('user_id', $user->id)->delete();
                 }
 
+                Activity::log('password_reset_completed', Activity::person($user), null, $user, $user->store_id);
                 event(new PasswordReset($user));
             },
         );

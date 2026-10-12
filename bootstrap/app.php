@@ -14,6 +14,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias(['role' => \App\Http\Middleware\EnsureRole::class]);
 
         $middleware->web(append: [
+            \App\Http\Middleware\EnsureActive::class,
             \App\Http\Middleware\HandleInertiaRequests::class,
         ]);
     })

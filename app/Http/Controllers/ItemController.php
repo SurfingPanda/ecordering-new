@@ -8,6 +8,7 @@ use App\Services\BarcodeGenerator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use App\Support\Activity;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
@@ -233,6 +234,7 @@ class ItemController extends Controller
     public function store(Request $request): RedirectResponse
     {
         $item = Item::create($this->validated($request));
+        Activity::log('item_created', "{$item->product_code} — {$item->description}");
 
         return to_route('retails.index', ['source' => $item->source])->with('success', "{$item->product_code} added.");
     }
@@ -240,6 +242,7 @@ class ItemController extends Controller
     public function update(Request $request, Item $item): RedirectResponse
     {
         $item->update($this->validated($request, $item));
+        Activity::log('item_updated', "{$item->product_code} — {$item->description}", collect($item->getChanges())->except('updated_at')->keys()->implode(', ') ?: null);
 
         return to_route('retails.index', ['source' => $item->source])->with('success', "{$item->product_code} updated.");
     }
@@ -249,6 +252,7 @@ class ItemController extends Controller
     {
         $items = $this->selected($request)->active()->get();
         Item::whereKey($items->modelKeys())->update(['archived_at' => now()]);
+        Activity::log('items_archived', $items->count().' item(s)', $items->take(10)->pluck('product_code')->implode(', ').($items->count() > 10 ? ', …' : ''));
 
         $n = $items->count();
 
@@ -261,6 +265,7 @@ class ItemController extends Controller
     {
         $items = $this->selected($request)->archived()->get();
         Item::whereKey($items->modelKeys())->update(['archived_at' => null]);
+        Activity::log('items_restored', $items->count().' item(s)', $items->take(10)->pluck('product_code')->implode(', ').($items->count() > 10 ? ', …' : ''));
 
         $n = $items->count();
 

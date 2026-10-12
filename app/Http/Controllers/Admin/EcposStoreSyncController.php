@@ -13,7 +13,10 @@ class EcposStoreSyncController extends Controller
     public function __invoke(EcposStores $stores): JsonResponse
     {
         try {
-            return response()->json($stores->sync());
+            $result = $stores->sync();
+            \App\Support\Activity::log('ecpos_sync', 'Stores', collect($result)->filter(fn ($n) => is_int($n))->map(fn ($n, $k) => "{$k} {$n}")->implode(', '));
+
+            return response()->json($result);
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 502);
         }

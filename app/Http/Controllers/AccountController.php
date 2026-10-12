@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -31,6 +32,7 @@ class AccountController extends Controller
 
         $user = $request->user();
         $user->forceFill(['password' => Hash::make($data['password']), 'remember_token' => Str::random(60)])->save();
+        Activity::log('password_changed', Activity::person($user), null, $user, $user->store_id);
 
         return back()->with('success', 'Your password was changed.');
     }

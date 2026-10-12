@@ -62,6 +62,7 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'deactivated_at' => 'datetime',
             'password' => 'hashed',
         ];
     }
@@ -75,6 +76,22 @@ class User extends Authenticatable
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);
+    }
+
+    /** A deactivated login can't sign in and is signed out of everything; its history stays. */
+    public function isActive(): bool
+    {
+        return $this->deactivated_at === null;
+    }
+
+    /** Switches the login off or on. Switching off also ends every session and any "keep me signed in" cookie. */
+    public function setActive(bool $active): void
+    {
+        $this->forceFill(['deactivated_at' => $active ? null : now()] + ($active ? [] : ['remember_token' => \Illuminate\Support\Str::random(60)]))->save();
+
+        if (! $active && config('session.driver') === 'database') {
+            \Illuminate\Support\Facades\DB::table(config('session.table', 'sessions'))->where('user_id', $this->id)->delete();
+        }
     }
 
     public function isAdmin(): bool

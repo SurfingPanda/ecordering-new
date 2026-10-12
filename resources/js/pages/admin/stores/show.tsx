@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, router, useForm } from '@inertiajs/react';
-import { ArrowLeft, Clock, KeyRound, Pencil, Plus, Power } from 'lucide-react';
+import { ArrowLeft, Clock, KeyRound, Pencil, Plus, Power, UserCheck, UserX } from 'lucide-react';
 
 import { useConfirm } from '@/components/confirm-dialog';
 import StoreFormDialog, { Field, type StoreRow } from '@/components/store-form-dialog';
@@ -16,7 +16,7 @@ import type { OrderStatus } from '@/types';
 
 interface Props {
     store: StoreRow;
-    users: { id: number; name: string; email: string; created_at: string }[];
+    users: { id: number; name: string; email: string; created_at: string; deactivated_at: string | null }[];
     store_deadline: { time: string; source: 'date' | 'store' | 'default' };
     counts: { pending: number; posted: number; cancelled: number };
     recent: { id: number; number: string; status: OrderStatus; order_date: string }[];
@@ -30,6 +30,19 @@ export default function ShowStore({ store, users, store_deadline, counts, recent
     const [resetting, setResetting] = useState<Props['users'][number] | null>(null);
 
     const [confirm, confirmDialog] = useConfirm();
+
+    const setLoginActive = (u: Props['users'][number], active: boolean) => {
+        const send = () => router.put(`/admin/stores/${store.id}/users/${u.id}/status`, { active }, { preserveScroll: true });
+        if (active) return send();
+        confirm({
+            title: `Deactivate ${u.name}?`,
+            description: 'They are signed out right away and can no longer sign in.',
+            note: <>Their orders and history are kept. You can reactivate the login at any time.</>,
+            tone: 'danger',
+            confirmLabel: 'Deactivate',
+            onConfirm: send,
+        });
+    };
 
     const toggle = () =>
         confirm(
@@ -97,11 +110,28 @@ export default function ShowStore({ store, users, store_deadline, counts, recent
                         ) : (
                             <ul className="divide-y divide-border/70">
                                 {users.map((u) => (
-                                    <li key={u.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-[13px]">
-                                        <span className="font-medium">{u.name}</span>
+                                    <li key={u.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 py-2.5 text-[13px]">
+                                        <span className={cn('font-medium', u.deactivated_at && 'text-muted-foreground line-through')}>{u.name}</span>
+                                        {u.deactivated_at && <span className="rounded bg-[#fde4e0] px-1.5 py-0.5 text-xs font-semibold text-[#a3261a]">Deactivated</span>}
                                         <span className="ml-auto text-muted-foreground">{u.email}</span>
                                         <Button variant="ghost" size="sm" onClick={() => setResetting(u)}>
                                             <KeyRound /> Reset password
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setLoginActive(u, u.deactivated_at !== null)}
+                                            className={u.deactivated_at ? '' : 'text-destructive hover:bg-destructive/10 hover:text-destructive'}
+                                        >
+                                            {u.deactivated_at ? (
+                                                <>
+                                                    <UserCheck /> Reactivate
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <UserX /> Deactivate
+                                                </>
+                                            )}
                                         </Button>
                                     </li>
                                 ))}

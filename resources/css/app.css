@@ -119,3 +119,33 @@ html::-webkit-scrollbar { display: none; }
 .sync-progress { position: relative; height: 8px; margin: 0 auto; max-width: 20rem; overflow: hidden; border-radius: 9999px; background: #e5e9f7; }
 .sync-progress > span { position: absolute; inset-block: 0; left: 0; width: 40%; border-radius: inherit; background: linear-gradient(90deg, var(--secondary), #4f6bf0); animation: sync-slide 1.2s ease-in-out infinite; }
 @keyframes sync-slide { 0% { left: -40%; } 100% { left: 100%; } }
+
+/* Signed-out screens: a gentle, bakery-happy motion. All of it stops for people who prefer reduced motion. */
+@keyframes auth-rise { from { opacity: 0; transform: translateY(18px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes auth-pop { from { opacity: 0; transform: translateX(-40px) scale(0.92); } to { opacity: 1; transform: none; } }
+@keyframes auth-float { 0%, 100% { transform: translateY(0) rotate(-1deg); } 50% { transform: translateY(-14px) rotate(1.2deg); } }
+@keyframes auth-shadow { 0%, 100% { transform: scaleX(1); opacity: 1; } 50% { transform: scaleX(0.82); opacity: 0.7; } }
+@keyframes auth-glow { 0%, 100% { opacity: 0.85; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.08); } }
+@keyframes auth-drift { from { background-position: 0 0; } to { background-position: 28px 56px; } }
+@keyframes auth-bubble { 0% { transform: translateY(0) scale(0.6); opacity: 0; } 15% { opacity: 0.5; } 100% { transform: translateY(-110vh) scale(1.1); opacity: 0; } }
+@keyframes auth-wave { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes auth-logo { 0% { transform: scale(0.6) rotate(-8deg); opacity: 0; } 60% { transform: scale(1.08) rotate(2deg); opacity: 1; } 100% { transform: none; opacity: 1; } }
+
+.auth-dots { animation: auth-drift 6s linear infinite; }
+.auth-card { animation: auth-rise 700ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.auth-card > * { animation: auth-rise 560ms cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: 560ms; }
+.auth-card > :nth-child(1) { animation: auth-logo 800ms cubic-bezier(0.34, 1.4, 0.64, 1) 200ms both; }
+.auth-card > :nth-child(2) { animation-delay: 320ms; }
+.auth-card > :nth-child(3) { animation-delay: 380ms; }
+.auth-card > :nth-child(4) { animation-delay: 440ms; }
+.auth-card > :nth-child(5) { animation-delay: 500ms; }
+.auth-mascot-in { animation: auth-pop 900ms cubic-bezier(0.22, 1, 0.36, 1) 150ms both; }
+.auth-mascot { animation: auth-float 4.2s ease-in-out 1s infinite; will-change: transform; }
+.auth-mascot-shadow { animation: auth-shadow 4.2s ease-in-out 1s infinite; }
+.auth-glow { animation: auth-glow 5s ease-in-out infinite; }
+.auth-bubble { animation: auth-bubble var(--dur, 14s) ease-in infinite; animation-delay: var(--delay, 0s); }
+.auth-wave { animation: auth-wave 14s linear infinite; will-change: transform; }
+@media (prefers-reduced-motion: reduce) {
+    .auth-dots, .auth-card, .auth-card > *, .auth-mascot-in, .auth-mascot, .auth-mascot-shadow, .auth-glow, .auth-wave { animation: none !important; }
+    .auth-bubble { display: none; }
+}

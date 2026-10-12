@@ -10,6 +10,7 @@ use App\Models\StoreDeadline;
 use App\Models\User;
 use App\Services\SubmissionDeadline;
 use Illuminate\Http\RedirectResponse;
+use App\Support\Activity;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
@@ -133,6 +134,7 @@ class SubmissionSettingsController extends Controller
     {
         $data = $request->validate(['one_order_per_day' => ['required', 'boolean']]);
         AppSetting::write('one_order_per_day', $data['one_order_per_day'] ? '1' : '0', $request->user()->id);
+        Activity::log('settings_changed', 'One order per store per day', $data['one_order_per_day'] ? 'Turned on' : 'Turned off');
 
         return back()->with('success', 'Order rule updated.');
     }

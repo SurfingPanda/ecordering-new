@@ -7,6 +7,7 @@ use App\Models\CatalogRule;
 use App\Models\Item;
 use App\Services\CatalogRouter;
 use Illuminate\Http\RedirectResponse;
+use App\Support\Activity;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
@@ -37,6 +38,7 @@ class CatalogRuleController extends Controller
     public function store(Request $request): RedirectResponse
     {
         $rule = CatalogRule::create($this->validated($request));
+        Activity::log('rule_changed', "{$rule->type}: {$rule->match} → {$rule->source}", 'Added');
 
         return back()->with('success', $this->saved($rule, 'added'));
     }
@@ -44,12 +46,14 @@ class CatalogRuleController extends Controller
     public function update(Request $request, CatalogRule $rule): RedirectResponse
     {
         $rule->update($this->validated($request, $rule));
+        Activity::log('rule_changed', "{$rule->type}: {$rule->match} → {$rule->source}", 'Edited');
 
         return back()->with('success', $this->saved($rule, 'updated'));
     }
 
     public function destroy(CatalogRule $rule): RedirectResponse
     {
+        Activity::log('rule_changed', "{$rule->type}: {$rule->match} → {$rule->source}", 'Deleted');
         $rule->delete();
 
         return back()->with('success', 'Rule deleted. Items already filed keep their catalog; new items from ECPOS follow the remaining rules.');
@@ -59,6 +63,7 @@ class CatalogRuleController extends Controller
     public function apply(): RedirectResponse
     {
         $moved = (new CatalogRouter)->reapply();
+        Activity::log('rule_changed', 'Rules applied', "{$moved} item(s) moved");
 
         return back()->with('success', $moved === 0 ? 'Every item is already in the right catalog.' : "{$moved} ".($moved === 1 ? 'item was' : 'items were').' moved to the catalog its rule says.');
     }

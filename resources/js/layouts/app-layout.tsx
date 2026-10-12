@@ -9,6 +9,7 @@ import {
     ChevronRight,
     Clock,
     LayoutDashboard,
+    ScrollText,
     Loader2,
     LogOut,
     Menu,
@@ -77,6 +78,7 @@ const adminNav: NavGroup[] = [
             { label: 'Stores', href: '/admin/stores', icon: Store },
             { label: 'Area Managers', href: '/admin/area-managers', icon: UserCog },
             { label: 'Order Settings', href: '/admin/settings', icon: Settings2 },
+            { label: 'Audit Log', href: '/admin/audit-log', icon: ScrollText },
         ],
     },
 ];

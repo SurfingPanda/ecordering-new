@@ -169,10 +169,10 @@ export function NewOrderProvider({ children }: { children: ReactNode }) {
             <Dialog open={open} onOpenChange={setOpen}>
                 <DialogContent className="max-w-sm">
                     <DialogTitle className="text-center">Start a new order?</DialogTitle>
-                    <DialogDescription className="text-center">Your order will be saved under this ID.</DialogDescription>
+                    <DialogDescription className="text-center">Your order is saved under this reference. Once ECPOS accepts it, it becomes the ECPOS TR number.</DialogDescription>
 
                     <div className="my-5 rounded-md border border-border bg-[#f2f4f8] px-4 py-4 text-center">
-                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Order ID</p>
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Order reference</p>
                         {error ? (
                             <p className="mt-1 text-sm font-medium text-destructive">{error}</p>
                         ) : (

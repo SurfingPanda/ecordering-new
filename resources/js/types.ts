@@ -49,6 +49,9 @@ export interface Paginated<T> {
     from: number | null;
     to: number | null;
     total: number;
+    current_page?: number;
+    last_page?: number;
+    per_page?: number;
 }
 
 /** Today's submission deadline for the signed-in store (null for admins). */

@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\Store;
 use App\Models\User;
 use App\Services\SubmissionDeadline;
+use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -47,7 +48,7 @@ class StoreController extends Controller
 
         return Inertia::render('admin/stores/show', [
             'store' => $this->row($store),
-            'users' => $store->users()->orderBy('name')->get(['id', 'name', 'email', 'created_at']),
+            'users' => $store->users()->orderBy('name')->get(['id', 'name', 'email', 'created_at', 'deactivated_at']),
             // NOT called 'deadline': that name is the shared prop that drives the store-account banner
             'store_deadline' => ['time' => $d['time'], 'source' => $d['source']],
             'counts' => [
@@ -74,6 +75,7 @@ class StoreController extends Controller
 
         $store = DB::transaction(function () use ($data) {
             $store = Store::create($this->storeAttributes($data));
+            Activity::log('store_created', Activity::store($store), null, null, $store->id);
 
             if (! empty($data['user_email'])) {
                 $this->createStoreUser($store, $data['user_name'], $data['user_email'], $data['user_password']);
@@ -91,6 +93,7 @@ class StoreController extends Controller
 
         $data = $request->validate($this->storeRules($store));
         $store->update($this->storeAttributes($data));
+        Activity::log('store_updated', Activity::store($store), null, null, $store->id);
 
         return back()->with('success', "{$store->name} was updated.");
     }
@@ -99,6 +102,7 @@ class StoreController extends Controller
     public function toggle(Store $store): RedirectResponse
     {
         $store->update(['is_active' => ! $store->is_active]);
+        Activity::log('store_toggled', Activity::store($store), $store->is_active ? 'Activated' : 'Deactivated', null, $store->id);
 
         return back()->with('success', $store->is_active
             ? "{$store->name} is active again."
@@ -126,8 +130,23 @@ class StoreController extends Controller
         $data = $request->validate(['password' => ['required', 'string', 'min:8', 'max:255', 'confirmed']]);
 
         $user->forceFill(['password' => Hash::make($data['password']), 'remember_token' => Str::random(60)])->save();
+        Activity::log('password_reset_by_admin', Activity::person($user), null, null, $store->id);
 
         return back()->with('success', "Password reset for {$user->name}. Share the new password with them.");
+    }
+
+    /** Switches one of the store's logins off or on. A deactivated login is signed out at once and can't sign in; its history stays. */
+    public function setUserActive(Request $request, Store $store, User $user): RedirectResponse
+    {
+        abort_unless($user->role === 'store' && $user->store_id === $store->id, 404);
+
+        $data = $request->validate(['active' => ['required', 'boolean']]);
+        $user->setActive((bool) $data['active']);
+        Activity::log($data['active'] ? 'user_reactivated' : 'user_deactivated', Activity::person($user), null, null, $store->id);
+
+        return back()->with('success', $data['active']
+            ? "{$user->name} can sign in again."
+            : "{$user->name} was deactivated and signed out. They can no longer sign in; their orders are unchanged.");
     }
 
     /** Codes are stored upper-case, so compare them upper-case too (otherwise 'sf01' would slip past 'SF01'). */
@@ -169,6 +188,7 @@ class StoreController extends Controller
     {
         $user = new User(['name' => $name, 'email' => $email, 'password' => $password]); // 'hashed' cast
         $user->forceFill(['role' => User::STORE, 'store_id' => $store->id])->save();
+        Activity::log('user_created', Activity::person($user), null, null, $store->id);
 
         return $user;
     }

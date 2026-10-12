@@ -81,9 +81,11 @@ Route::middleware('auth')->group(function () {
         Route::post('/retails/ecpos-sync', \App\Http\Controllers\Admin\EcposSyncController::class)->name('retails.ecpos.sync');
 
         Route::prefix('admin')->name('admin.')->group(function () {
+            Route::get('/audit-log', \App\Http\Controllers\Admin\AuditLogController::class)->name('audit-log');
             Route::get('/area-managers', [\App\Http\Controllers\Admin\AreaManagerController::class, 'index'])->name('area-managers');
             Route::post('/area-managers', [\App\Http\Controllers\Admin\AreaManagerController::class, 'store'])->name('area-managers.store');
             Route::put('/area-managers/{manager}', [\App\Http\Controllers\Admin\AreaManagerController::class, 'update'])->whereNumber('manager')->name('area-managers.update');
+            Route::put('/area-managers/{manager}/status', [\App\Http\Controllers\Admin\AreaManagerController::class, 'status'])->whereNumber('manager')->name('area-managers.status');
             Route::put('/area-managers/{manager}/password', [\App\Http\Controllers\Admin\AreaManagerController::class, 'password'])->whereNumber('manager')->name('area-managers.password');
             Route::delete('/area-managers/{manager}', [\App\Http\Controllers\Admin\AreaManagerController::class, 'destroy'])->whereNumber('manager')->name('area-managers.destroy');
 
@@ -93,6 +95,7 @@ Route::middleware('auth')->group(function () {
             Route::put('/stores/{store}', [StoreController::class, 'update'])->name('stores.update');
             Route::patch('/stores/{store}/status', [StoreController::class, 'toggle'])->name('stores.toggle');
             Route::post('/stores/{store}/users', [StoreController::class, 'addUser'])->name('stores.users.store');
+            Route::put('/stores/{store}/users/{user}/status', [StoreController::class, 'setUserActive'])->whereNumber(['store', 'user'])->name('stores.users.status');
             Route::put('/stores/{store}/users/{user}/password', [StoreController::class, 'resetPassword'])->name('stores.users.password');
 
             Route::get('/archived-products', [ItemController::class, 'archived'])->name('archived');
