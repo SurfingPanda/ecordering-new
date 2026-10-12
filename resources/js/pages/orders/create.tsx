@@ -19,6 +19,7 @@ interface CatalogItem {
     product_code: string;
     description: string;
     category: string | null;
+    moq: number | null;
 }
 
 const MAX_QTY = 9999;
@@ -67,7 +68,9 @@ function useOnline() {
 
 const xsrf = () => decodeURIComponent(document.cookie.split('; ').find((c) => c.startsWith('XSRF-TOKEN='))?.split('=')[1] ?? '');
 
-export default function CreateOrder({ order, items, blocked, saved }: { order: { id: number; number: string; order_date: string }; items: CatalogItem[]; blocked: string | null; saved: Saved }) {
+const STAFF_KEY = 'order-staff';
+
+export default function CreateOrder({ order, items, blocked, saved, staff }: { order: { id: number; number: string; order_date: string }; items: CatalogItem[]; blocked: string | null; saved: Saved; staff: string[] }) {
     const [tab, setTab] = useState<ItemSource | 'all'>('all');
     const [query, setQuery] = useState('');
     const [category, setCategory] = useState('');
@@ -79,7 +82,16 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
     const online = useOnline();
     const inputs = useRef<Record<number, HTMLInputElement | null>>({});
 
-    const form = useForm({ order_date: order.order_date, notes: backup.current?.notes ?? saved.notes });
+    // a shared tablet is usually used by the same person all shift, so remember the last pick on this device
+    const rememberedStaff = (() => {
+        try {
+            const name = localStorage.getItem(STAFF_KEY) ?? '';
+            return staff.includes(name) ? name : '';
+        } catch {
+            return '';
+        }
+    })();
+    const form = useForm({ order_date: order.order_date, notes: backup.current?.notes ?? saved.notes, staff_name: rememberedStaff });
 
     // ---- autosave: debounce changes to the draft, and flush right away when leaving the page ----
     const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(backup.current ? 'saving' : saved.lines.length > 0 ? 'saved' : 'idle');
@@ -220,6 +232,7 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
     );
 
     const selected = items.filter((i) => (qty[i.id] ?? 0) > 0);
+    const belowMin = selected.filter((i) => i.moq && qty[i.id] < i.moq);
     const totalUnits = selected.reduce((sum, i) => sum + qty[i.id], 0);
 
     const q = query.trim().toLowerCase();
@@ -271,7 +284,7 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
 
     const lineError = (form.errors as Record<string, string>).lines ?? Object.entries(form.errors).find(([k]) => k.startsWith('lines.'))?.[1];
     // `blocked` is the server's reason ordering is closed (deadline passed / store deactivated); the server re-checks on submit
-    const canSubmit = selected.length > 0 && !form.processing && !blocked && online;
+    const canSubmit = selected.length > 0 && belowMin.length === 0 && (staff.length === 0 || form.data.staff_name !== '') && !form.processing && !blocked && online;
     const closedMessage = blocked ?? (form.errors as Record<string, string>).deadline;
 
     return (
@@ -398,11 +411,17 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
                                                 {i.product_code}
                                                 {i.category && <span className="md:hidden"> · {i.category}</span>}
                                             </td>
-                                            <td className={cn(td, value > 0 && 'font-semibold', 'max-md:col-start-1 max-md:row-start-1 max-md:p-0 max-md:text-[14px] max-md:leading-snug')}>{i.description}</td>
+                                            <td className={cn(td, value > 0 && 'font-semibold', 'max-md:col-start-1 max-md:row-start-1 max-md:p-0 max-md:text-[14px] max-md:leading-snug')}>{i.description}
+                                                {!!i.moq && (
+                                                    <span className={cn('ml-2 text-xs font-medium', value > 0 && value < i.moq ? 'text-destructive' : 'text-muted-foreground')}>
+                                                        Min {i.moq}
+                                                    </span>
+                                                )}
+                                            </td>
                                             <td className={cn(td, 'whitespace-nowrap text-muted-foreground max-md:hidden')}>{i.category}</td>
                                             <td className="px-3 py-1.5 max-md:col-start-2 max-md:row-span-2 max-md:row-start-1 max-md:p-0">
                                                 <div className="mx-auto flex w-[144px] items-center gap-1 md:w-[122px]">
-                                                    <Stepper label={`Decrease ${i.description}`} disabled={value === 0} onClick={() => setItemQty(i.id, value - 1)}>
+                                                    <Stepper label={`Decrease ${i.description}`} disabled={value === 0} onClick={() => setItemQty(i.id, i.moq && value <= i.moq ? 0 : value - 1)}>
                                                         <Minus />
                                                     </Stepper>
                                                     <input
@@ -422,7 +441,7 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
                                                             value > 0 ? 'border-secondary' : 'border-input',
                                                         )}
                                                     />
-                                                    <Stepper label={`Increase ${i.description}`} onClick={() => setItemQty(i.id, value + 1)}>
+                                                    <Stepper label={`Increase ${i.description}`} onClick={() => setItemQty(i.id, value === 0 && i.moq ? i.moq : value + 1)}>
                                                         <Plus />
                                                     </Stepper>
                                                 </div>
@@ -456,6 +475,12 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
                             <Stat label="Items" value={selected.length} />
                             <Stat label="Total units" value={totalUnits} />
                         </div>
+
+                        {belowMin.length > 0 && (
+                            <p role="alert" className="mb-3 rounded-md border border-[#f0b8a6] bg-[#ffece6] px-3 py-2 text-xs font-medium text-[#9c2a00]">
+                                Below the minimum: {belowMin.map((i) => `${i.description} (min ${i.moq})`).join(', ')}.
+                            </p>
+                        )}
 
                         {selected.length === 0 ? (
                             <p className="py-5 text-center text-sm text-muted-foreground">Enter a quantity beside any item to add it.</p>
@@ -496,6 +521,35 @@ export default function CreateOrder({ order, items, blocked, saved }: { order: {
                             </p>
                             {form.errors.order_date && <p className="text-xs font-medium text-destructive">{form.errors.order_date}</p>}
                         </div>
+
+                        {staff.length > 0 && (
+                            <div className="mt-4 space-y-1.5">
+                                <Label htmlFor="staff_name" className="text-[13px]">
+                                    Placed by
+                                </Label>
+                                <select
+                                    id="staff_name"
+                                    value={form.data.staff_name}
+                                    onChange={(e) => {
+                                        form.setData('staff_name', e.target.value);
+                                        try {
+                                            localStorage.setItem(STAFF_KEY, e.target.value);
+                                        } catch {
+                                            /* private mode: just don't remember it */
+                                        }
+                                    }}
+                                    className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
+                                >
+                                    <option value="">Choose who is ordering…</option>
+                                    {staff.map((name) => (
+                                        <option key={name} value={name}>
+                                            {name}
+                                        </option>
+                                    ))}
+                                </select>
+                                {(form.errors as Record<string, string>).staff_name && <p className="text-xs font-medium text-destructive">{(form.errors as Record<string, string>).staff_name}</p>}
+                            </div>
+                        )}
 
                         <div className="mt-4 space-y-1.5">
                             <Label htmlFor="notes" className="text-[13px]">

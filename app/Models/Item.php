@@ -20,12 +20,12 @@ class Item extends Model
     // archived_at is deliberately not fillable: items are archived/restored only through the admin actions.
     protected $fillable = [
         'source', 'product_code', 'description', 'barcode',
-        'category', 'retail_group',
+        'category', 'retail_group', 'moq',
     ];
 
     protected function casts(): array
     {
-        return ['archived_at' => 'datetime'];
+        return ['archived_at' => 'datetime', 'moq' => 'integer'];
     }
 
     /** Items that can be browsed and ordered. Items are never deleted, only archived. */
@@ -50,6 +50,7 @@ class Item extends Model
             'barcode' => $this->barcode,
             'category' => $this->category,
             'retail_group' => $this->retail_group,
+            'moq' => $this->moq,
             'archived_at' => $this->archived_at?->toIso8601String(),
         ];
     }

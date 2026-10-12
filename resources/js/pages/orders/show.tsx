@@ -18,6 +18,7 @@ import type { ItemSource, OrderSummary } from '@/types';
 interface Props {
     order: OrderSummary & {
         notes: string | null;
+        staff_name: string | null;
         posted_at: string | null;
         ecpos: {
             state: 'queued' | 'sending' | 'sent' | 'failed';
@@ -150,6 +151,14 @@ export default function ShowOrder({ order, can }: Props) {
                             <>
                                 <span className="font-semibold text-foreground">
                                     {order.store.code} — {order.store.name}
+                                </span>
+                                <span aria-hidden="true">·</span>
+                            </>
+                        )}
+                        {order.staff_name && (
+                            <>
+                                <span>
+                                    Placed by <span className="font-medium text-foreground">{order.staff_name}</span>
                                 </span>
                                 <span aria-hidden="true">·</span>
                             </>

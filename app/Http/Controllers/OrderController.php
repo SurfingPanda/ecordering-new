@@ -77,6 +77,7 @@ class OrderController extends Controller
             'order' => [
                 ...$this->summary($order),
                 'notes' => $order->notes,
+                'staff_name' => $order->staff_name,
                 'posted_at' => $order->posted_at?->toIso8601String(),
                 'ecpos' => $user->isManagement() && $order->ecpos_state ? [ // ECPOS details are for admins only; stores never see them
                     'state' => $order->ecpos_state, // queued | sending | sent | failed
@@ -256,6 +257,17 @@ class OrderController extends Controller
         return response()->json(['saved_at' => now()->toIso8601String(), 'lines' => count($data['lines'])]);
     }
 
+    /** ECPOS refuses a line below the item's minimum order quantity, so catch it here with a message the store can act on. */
+    private function assertMinimums($quantities, $items): void
+    {
+        $short = $quantities->filter(fn ($qty, $id) => ($items[$id]->moq ?? 0) > $qty)
+            ->map(fn ($qty, $id) => "{$items[$id]->description} (minimum {$items[$id]->moq}, you entered {$qty})");
+
+        if ($short->isNotEmpty()) {
+            throw ValidationException::withMessages(['lines' => 'Below the minimum order quantity: '.$short->implode('; ').'.']);
+        }
+    }
+
     /** A real date, within a year either side of today so a typo can't bury an order. */
     private function dateRules(): array
     {
@@ -284,6 +296,7 @@ class OrderController extends Controller
             'blocked' => $this->closedReason($user) ?? ($this->existingOrderOn($user->store, $draft->order_date->toDateString(), $draft)
                 ? $this->alreadyOrderedMessage($user->store, $this->existingOrderOn($user->store, $draft->order_date->toDateString(), $draft), $draft->order_date->toDateString())
                 : null),
+            'staff' => app(\App\Services\EcposStaff::class)->forStore($user->store?->ecpos_store_id),
             'items' => Item::active()->orderBy('description')->get()
                 ->map(fn (Item $i) => [
                     'id' => $i->id,
@@ -291,6 +304,7 @@ class OrderController extends Controller
                     'product_code' => $i->product_code,
                     'description' => $i->description,
                     'category' => $i->category,
+                    'moq' => $i->moq,
                 ]),
         ]);
     }
@@ -300,12 +314,17 @@ class OrderController extends Controller
         $user = $request->user();
 
         // the order date is whatever was chosen when the order was started; the sheet can't change it
+        $staff = app(\App\Services\EcposStaff::class)->forStore($user->store?->ecpos_store_id);
         $data = $request->validate([
             'notes' => ['nullable', 'string', 'max:1000'],
+            // when ECPOS lists the store's staff, say who is ordering (only a listed name is accepted)
+            'staff_name' => $staff === [] ? ['nullable', 'prohibited'] : ['required', Rule::in($staff)],
             'lines' => ['required', 'array', 'min:1'],
             'lines.*.item_id' => ['required', 'integer', Rule::exists('items', 'id')->whereNull('archived_at')],
             'lines.*.quantity' => ['required', 'integer', 'min:1', 'max:9999'],
         ], [
+            'staff_name.required' => 'Choose who is placing this order.',
+            'staff_name.in' => 'Choose who is placing this order from the list.',
             'lines.required' => 'Enter a quantity for at least one item.',
             'lines.min' => 'Enter a quantity for at least one item.',
         ]);
@@ -323,9 +342,10 @@ class OrderController extends Controller
             // Quantities for the same item are merged; item data is read from the database, never the client.
             $quantities = collect($data['lines'])->groupBy('item_id')->map(fn ($g) => $g->sum('quantity'));
             $items = Item::whereIn('id', $quantities->keys())->get()->keyBy('id');
+            $this->assertMinimums($quantities, $items);
 
             $order->lines()->delete();
-            $order->update(['order_date' => $data['order_date'], 'notes' => $data['notes'] ?? null, 'status' => 'pending']);
+            $order->update(['order_date' => $data['order_date'], 'notes' => $data['notes'] ?? null, 'staff_name' => $data['staff_name'] ?? null, 'status' => 'pending']);
 
             foreach ($quantities as $itemId => $qty) {
                 $item = $items[$itemId];

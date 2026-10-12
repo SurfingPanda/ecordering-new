@@ -29,6 +29,14 @@ class EcposCatalog
         return app(EcposClient::class)->get('items');
     }
 
+    /** ECPOS sends null / 0 / "" for "no minimum"; anything else is rounded up to a whole quantity. */
+    private function moq(mixed $value): ?int
+    {
+        $n = is_numeric($value) ? (int) ceil((float) $value) : 0;
+
+        return $n > 0 ? min($n, 9999) : null;
+    }
+
     /**
      * @param  bool  $dryRun  work out the numbers but write nothing
      * @return array{added: int, updated: int, archived: int, restored: int, unchanged: int, skipped: int, total: int}
@@ -54,6 +62,7 @@ class EcposCatalog
                 'description' => mb_substr($name, 0, 255),
                 'category' => mb_substr(trim((string) ($row['itemgroup'] ?? '')) ?: 'UNCATEGORISED', 0, 100),
                 'retail_group' => strtoupper(trim((string) ($row['itemdepartment'] ?? ''))) === 'REGULAR PRODUCT' ? 'regular_product' : 'non_product',
+                'moq' => $this->moq($row['moq'] ?? null),
             ];
         }
 
@@ -81,7 +90,7 @@ class EcposCatalog
                     continue;
                 }
 
-                $changed = $item->source !== $data['source'] || $item->description !== $data['description'] || $item->category !== $data['category'] || $item->retail_group !== $data['retail_group'];
+                $changed = $item->source !== $data['source'] || $item->description !== $data['description'] || $item->category !== $data['category'] || $item->retail_group !== $data['retail_group'] || $item->moq !== $data['moq'];
                 $restore = $item->archived_at !== null && $item->synced_at !== null; // only bring back what the sync itself archived
                 $adopt = $item->synced_at === null;
 

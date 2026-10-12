@@ -29,7 +29,7 @@ class Order extends Model
     // Controllers only ever pass validated, server-built arrays here (never raw request input), so status,
     // store_id and the posting/cancellation columns can't be injected by a client.
     protected $fillable = [
-        'user_id', 'store_id', 'order_date', 'notes', 'status',
+        'user_id', 'store_id', 'order_date', 'notes', 'staff_name', 'status',
         'posted_at', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
         'ecpos_journal_id', 'ecpos_sent_at', 'ecpos_note',
         'ecpos_state', 'ecpos_attempts', 'ecpos_error', 'ecpos_uncertain', 'ecpos_state_at', 'ecpos_next_at',

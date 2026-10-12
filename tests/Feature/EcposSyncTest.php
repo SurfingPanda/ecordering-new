@@ -25,6 +25,17 @@ class EcposSyncTest extends TestCase
         return ['itemid' => $id, 'itemname' => $name, 'itemgroup' => $group, 'itemdepartment' => $dept, 'moq' => null];
     }
 
+    public function test_sync_stores_the_minimum_order_quantity(): void
+    {
+        $this->feed([['moq' => '12'] + $this->row('BRE-1', 'Pandesal'), ['moq' => 0] + $this->row('BRE-2', 'Loaf'), $this->row('BRE-3', 'Roll')]);
+
+        (new \App\Services\EcposCatalog)->sync();
+
+        $this->assertSame(12, Item::where('product_code', 'BRE-1')->value('moq'));
+        $this->assertNull(Item::where('product_code', 'BRE-2')->value('moq'));
+        $this->assertNull(Item::where('product_code', 'BRE-3')->value('moq'));
+    }
+
     public function test_sync_adds_new_bw_products_with_their_group_as_category(): void
     {
         $this->feed([$this->row('BRE-1', 'Pandesal'), $this->row('PRM-9', 'Coffee', 'BW PROMO', 'NON PRODUCT')]);

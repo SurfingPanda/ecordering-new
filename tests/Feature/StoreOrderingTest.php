@@ -26,6 +26,45 @@ class StoreOrderingTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_a_store_with_ecpos_staff_must_say_who_is_ordering(): void
+    {
+        $store = $this->makeStore();
+        $store->forceFill(['ecpos_store_id' => 'BW0075'])->save();
+        $user = $this->makeStoreUser($store);
+        $items = $this->makeItems();
+        config(['ecpos.api_key' => 'k', 'ecpos.base_url' => 'https://ecpos.test/api/external/orders']);
+        \Illuminate\Support\Facades\Cache::flush();
+        \Illuminate\Support\Facades\Http::fake(['ecpos.test/*' => \Illuminate\Support\Facades\Http::response([['id' => 1, 'name' => 'Mylene Malala', 'role' => 'SV']], 200)]);
+
+        $this->actingAs($user)->post('/orders', $this->payload([[$items['bw'], 2]]))->assertSessionHasErrors('staff_name');
+        $this->actingAs($user)->post('/orders', $this->payload([[$items['bw'], 2]], null, ['staff_name' => 'Someone Else']))->assertSessionHasErrors('staff_name');
+
+        $this->actingAs($user)->post('/orders', $this->payload([[$items['bw'], 2]], null, ['staff_name' => 'Mylene Malala']))->assertSessionHasNoErrors();
+        $this->assertSame('Mylene Malala', Order::where('status', '!=', 'draft')->firstOrFail()->staff_name);
+    }
+
+    public function test_a_store_without_ecpos_staff_orders_as_before(): void
+    {
+        $user = $this->makeStoreUser($this->makeStore());
+        $items = $this->makeItems();
+
+        $this->actingAs($user)->post('/orders', $this->payload([[$items['bw'], 2]]))->assertSessionHasNoErrors();
+        $this->assertNull(Order::where('status', '!=', 'draft')->firstOrFail()->staff_name);
+    }
+
+    public function test_an_order_below_an_items_minimum_is_refused(): void
+    {
+        $user = $this->makeStoreUser($this->makeStore());
+        $items = $this->makeItems();
+        $items['bw']->forceFill(['moq' => 10])->save();
+
+        $this->actingAs($user)->post('/orders', $this->payload([[$items['bw'], 4]]))->assertSessionHasErrors('lines');
+        $this->assertSame(0, Order::where('status', '!=', 'draft')->count());
+
+        $this->actingAs($user)->post('/orders', $this->payload([[$items['bw'], 10]]))->assertSessionHasNoErrors();
+        $this->assertSame(1, Order::where('status', '!=', 'draft')->count());
+    }
+
     public function test_a_store_can_order_bw_products_and_warehouse_items(): void
     {
         $store = $this->makeStore();

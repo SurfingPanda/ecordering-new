@@ -43,7 +43,7 @@ class EcposOrders
         return [
             'payload' => [
                 'store' => $storeId,
-                'staff' => $order->user?->name,
+                'staff' => $order->staff_name ?: $order->user?->name,
                 'description' => trim($order->reference().($order->notes ? ' — '.$order->notes : '')),
                 'items' => $sendable->groupBy('product_code')->map(fn ($g, $code) => ['itemid' => (string) $code, 'qty' => (int) $g->sum('quantity')])->values()->all(),
             ],

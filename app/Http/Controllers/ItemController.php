@@ -29,7 +29,7 @@ class ItemController extends Controller
 {
     private const SORTABLE = [
         'product_code', 'description', 'barcode',
-        'category', 'retail_group', 'archived_at',
+        'category', 'retail_group', 'moq', 'archived_at',
     ];
 
     /** The live catalog: what stores see and can order. */

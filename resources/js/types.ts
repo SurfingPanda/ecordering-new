@@ -11,6 +11,7 @@ export interface Item {
     barcode: string | null;
     category: string | null;
     retail_group: RetailGroup;
+    moq: number | null;
 }
 
 export const retailGroupLabel: Record<RetailGroup, string> = {

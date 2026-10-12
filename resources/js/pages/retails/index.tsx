@@ -40,6 +40,7 @@ const baseColumns: { key: string; label: string }[] = [
     { key: 'product_code', label: 'Product Code' },
     { key: 'description', label: 'Description' },
     { key: 'barcode', label: 'Barcode' },
+    { key: 'moq', label: 'MOQ' },
     { key: 'category', label: 'Category' },
     { key: 'retail_group', label: 'Retail Group' },
 ];
@@ -456,6 +457,7 @@ export default function Retails({ items, view, basePath, filters, categories, co
                                     <td className={cn(td, 'whitespace-nowrap py-2.5 font-mono text-[12.5px] tracking-wide text-muted-foreground max-md:hidden')}>
                                         {item.barcode ?? <span className="font-sans tracking-normal text-muted-foreground/50">No barcode</span>}
                                     </td>
+                                    <td className={cn(td, 'whitespace-nowrap py-2.5 text-sm font-medium tabular-nums max-md:hidden')}>{item.moq ?? <span className="text-muted-foreground/50">—</span>}</td>
                                     <td className={cn(td, 'whitespace-nowrap py-2.5 max-md:hidden')}>
                                         {item.category ? (
                                             <span className="inline-block rounded-full bg-[#eef1f8] px-2.5 py-0.5 text-xs font-medium text-[#3a4270]">{item.category}</span>
