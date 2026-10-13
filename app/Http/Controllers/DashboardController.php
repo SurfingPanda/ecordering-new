@@ -2,18 +2,23 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DailyCatalogTotal;
+use App\Models\DailyItemTotal;
 use App\Models\Item;
 use App\Models\Order;
-use App\Models\OrderItem;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class DashboardController extends Controller
 {
     private const RANGES = [7, 30, 90];
+
+    /** How long the dashboard totals are reused. */
+    private const CACHE_SECONDS = 60;
 
     /** Orders that count as "ordered" in reports: every placed order (pending or posted). */
     private const COUNTED = Order::ACTIVE;
@@ -33,20 +38,27 @@ class DashboardController extends Controller
         $prevEnd = $start->subSecond();
         $prevStart = $start->subDays($days);
 
-        return Inertia::render('dashboard', [
-            'range' => $days,
-            'period' => ['from' => $start->toDateString(), 'to' => $end->toDateString()],
+        // The totals scan every order line in the period, so they are kept for a minute per audience (a store, an area
+        // manager's stores or everyone) and range. The "recent orders" list below is never cached, so a new order shows at once.
+        $key = 'dashboard:'.md5(json_encode([$this->storeIds, $days])).':'.$end->toDateString();
+        $totals = Cache::remember($key, self::CACHE_SECONDS, fn () => [
             'kpis' => [
                 'orders' => $this->kpi($this->orderCount($start, $end), $this->orderCount($prevStart, $prevEnd)),
                 'units' => $this->kpi($this->unitCount($start, $end), $this->unitCount($prevStart, $prevEnd)),
                 'pending' => Order::where('status', 'pending')->when($this->storeIds !== null, fn ($q) => $q->whereIn('store_id', $this->storeIds))->count(),
-                'items_ordered' => $this->lines($start, $end)->distinct()->count('order_items.product_code'),
+                'items_ordered' => $this->totals($start, $end)->distinct()->count('product_code'),
             ],
             'daily' => $this->daily($start, $days),
             'split' => $this->split($start, $end),
             'top_items' => collect(Item::SOURCES)->mapWithKeys(fn (string $s) => [$s => $this->topItems($start, $end, $s)])->all(),
             'top_categories' => $this->topCategories($start, $end),
             'not_ordered' => $this->notOrdered($start, $end),
+        ]);
+
+        return Inertia::render('dashboard', [
+            'range' => $days,
+            'period' => ['from' => $start->toDateString(), 'to' => $end->toDateString()],
+            ...$totals,
             'scope' => $user->isStore() ? 'store' : 'all', // 'all' = several stores, so the lists show a Store column
             'recent' => Order::with(['user:id,name', 'store:id,code,name'])->visibleTo($user)
                 ->where('status', '!=', Order::DRAFT)
@@ -70,14 +82,15 @@ class DashboardController extends Controller
         ]);
     }
 
-    /** order_items rows that belong to counted orders within [$from, $to]. */
-    private function lines(CarbonImmutable $from, CarbonImmutable $to): Builder
+    /**
+     * What was ordered between $from and $to, from the daily totals (see App\Services\OrderSummary): one row per day,
+     * store, product and catalog, counting placed orders only. Far fewer rows than the order lines they add up.
+     */
+    private function totals(CarbonImmutable $from, CarbonImmutable $to): Builder
     {
-        return OrderItem::query()
-            ->join('orders', 'orders.id', '=', 'order_items.order_id')
-            ->whereIn('orders.status', self::COUNTED)
-            ->when($this->storeIds !== null, fn ($q) => $q->whereIn('orders.store_id', $this->storeIds))
-            ->whereBetween('orders.order_date', [$from->toDateString(), $to->toDateString()]);
+        // everyone-at-once (admin) reads the all-stores rollup; a store or area manager reads their own stores' rows
+        return ($this->storeIds === null ? DailyCatalogTotal::query() : DailyItemTotal::query()->whereIn('store_id', $this->storeIds))
+            ->whereBetween('order_date', [$from->toDateString(), $to->toDateString()]);
     }
 
     private function orderCount(CarbonImmutable $from, CarbonImmutable $to): int
@@ -87,7 +100,7 @@ class DashboardController extends Controller
 
     private function unitCount(CarbonImmutable $from, CarbonImmutable $to): int
     {
-        return (int) $this->lines($from, $to)->sum('order_items.quantity');
+        return (int) $this->totals($from, $to)->sum('units');
     }
 
     /** Current value plus % change versus the previous period (null when there is nothing to compare). */
@@ -103,8 +116,8 @@ class DashboardController extends Controller
     /** Units per day, split by catalog, with empty days filled in so the chart has no gaps. */
     private function daily(CarbonImmutable $start, int $days): array
     {
-        $rows = $this->lines($start, $start->addDays($days - 1)->endOfDay())
-            ->selectRaw('orders.order_date as day, order_items.source as source, SUM(order_items.quantity) as units')
+        $rows = $this->totals($start, $start->addDays($days - 1)->endOfDay())
+            ->selectRaw('order_date as day, source, SUM(units) as units')
             ->groupBy('day', 'source')
             ->get()
             ->groupBy('day');
@@ -119,8 +132,8 @@ class DashboardController extends Controller
 
     private function split(CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $rows = $this->lines($start, $end)
-            ->selectRaw('order_items.source as source, SUM(order_items.quantity) as units, COUNT(DISTINCT order_items.product_code) as items')
+        $rows = $this->totals($start, $end)
+            ->selectRaw('source, SUM(units) as units, COUNT(DISTINCT product_code) as items')
             ->groupBy('source')
             ->get()
             ->keyBy('source');
@@ -132,10 +145,10 @@ class DashboardController extends Controller
 
     private function topItems(CarbonImmutable $start, CarbonImmutable $end, string $source): array
     {
-        return $this->lines($start, $end)
-            ->where('order_items.source', $source)
-            ->selectRaw('order_items.product_code as product_code, MAX(order_items.name) as name, MAX(order_items.category) as category, SUM(order_items.quantity) as units, COUNT(DISTINCT orders.id) as orders')
-            ->groupBy('order_items.product_code')
+        return $this->totals($start, $end)
+            ->where('source', $source)
+            ->selectRaw('product_code, MAX(name) as name, MAX(category) as category, SUM(units) as units, SUM(order_count) as orders')
+            ->groupBy('product_code')
             ->orderByDesc('units')
             ->orderBy('product_code')
             ->limit(8)
@@ -151,10 +164,10 @@ class DashboardController extends Controller
 
     private function topCategories(CarbonImmutable $start, CarbonImmutable $end): array
     {
-        return $this->lines($start, $end)
-            ->whereNotNull('order_items.category')
-            ->selectRaw('order_items.category as category, order_items.source as source, SUM(order_items.quantity) as units')
-            ->groupBy('order_items.category', 'order_items.source')
+        return $this->totals($start, $end)
+            ->whereNotNull('category')
+            ->selectRaw('category, source, SUM(units) as units')
+            ->groupBy('category', 'source')
             ->orderByDesc('units')
             ->limit(8)
             ->get()
@@ -165,9 +178,9 @@ class DashboardController extends Controller
     /** Catalog items nobody ordered in the period: candidates to review. */
     private function notOrdered(CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $ordered = $this->lines($start, $end)->select('order_items.item_id');
+        $ordered = $this->totals($start, $end)->select('product_code');
 
-        return Item::active()->whereNotIn('id', $ordered)
+        return Item::active()->whereNotIn('product_code', $ordered)
             ->orderBy('source')->orderBy('product_code')
             ->limit(8)
             ->get(['product_code', 'description', 'category', 'source'])

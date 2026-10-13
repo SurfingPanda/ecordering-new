@@ -71,7 +71,7 @@ const xsrf = () => decodeURIComponent(document.cookie.split('; ').find((c) => c.
 
 const STAFF_KEY = 'order-staff';
 
-export default function CreateOrder({ order, items, blocked, saved, staff }: { order: { id: number; number: string; order_date: string }; items: CatalogItem[]; blocked: string | null; saved: Saved; staff: string[] }) {
+export default function CreateOrder({ order, store, for_store, items, blocked, saved, staff }: { order: { id: number; number: string; order_date: string }; store: { id: number; code: string; name: string }; for_store: boolean; items: CatalogItem[]; blocked: string | null; saved: Saved; staff: string[] }) {
     const [tab, setTab] = useState<ItemSource | 'all'>('all');
     const [query, setQuery] = useState('');
     const [category, setCategory] = useState('');
@@ -307,6 +307,11 @@ export default function CreateOrder({ order, items, blocked, saved, staff }: { o
                 </>
             }
         >
+            {for_store && (
+                <div role="status" className="mb-4 rounded-md border border-[#c9d4fa] bg-[#eef2ff] px-4 py-3 text-sm text-[#1f3aa8]">
+                    Placing this order for <span className="font-semibold">{store.code} {store.name}</span> on the store’s behalf.
+                </div>
+            )}
             {!online && (
                 <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-md border border-[#f0b8a6] bg-[#ffece6] px-4 py-3 text-sm text-[#9c2a00]">
                     <WifiOff className="mt-0.5 size-4 shrink-0" />

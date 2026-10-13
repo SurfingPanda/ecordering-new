@@ -55,8 +55,12 @@ class EcposClient
         return is_array($response->json()) ? $response->json() : ['raw' => $response->body()];
     }
 
-    /** @return array<int|string, mixed> */
-    public function get(string $path): array
+    /**
+     * @param  ?int  $timeout  seconds to wait (default: ECPOS_TIMEOUT); pass a small one for lookups that must not hold a page up
+     * @param  int  $attempts  tries before giving up
+     * @return array<int|string, mixed>
+     */
+    public function get(string $path, ?int $timeout = null, int $attempts = 2): array
     {
         $key = config('ecpos.api_key');
         if (! $key) {
@@ -65,8 +69,8 @@ class EcposClient
 
         try {
             $response = Http::withHeaders(['X-API-Key' => $key, 'Accept' => 'application/json'])
-                ->timeout(config('ecpos.timeout'))
-                ->retry(2, 500, throw: false)
+                ->timeout($timeout ?? config('ecpos.timeout'))
+                ->retry($attempts, 500, throw: false)
                 ->get(config('ecpos.base_url').'/'.ltrim($path, '/'));
         } catch (ConnectionException $e) {
             throw new RuntimeException('Could not reach ECPOS. Please try again in a moment.');

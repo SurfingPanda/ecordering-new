@@ -89,6 +89,7 @@ const managerNav: NavGroup[] = [
     {
         label: 'Orders',
         items: [
+            { label: 'Place an Order', href: '/orders/create', icon: ShoppingCart },
             { label: 'Today’s Orders', href: '/admin/today', icon: CalendarCheck },
             { label: 'All Store Orders', href: '/admin/consolidated', icon: TableProperties },
             { label: 'Orders (TRs)', href: '/orders', icon: ReceiptText },

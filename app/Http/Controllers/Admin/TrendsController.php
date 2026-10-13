@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\Store;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -25,12 +26,23 @@ class TrendsController extends Controller
 
     private const ITEM_ROWS = 40;
 
+    /** How long a trends page is reused: it adds up a year of order lines. */
+    private const CACHE_SECONDS = 60;
+
     public function __invoke(Request $request): Response
     {
         $by = $request->query('by') === 'month' ? 'month' : 'week';
         $source = in_array($request->query('source'), Item::SOURCES, true) ? (string) $request->query('source') : null;
 
         $ids = $request->user()->visibleStoreIds(); // null = every store (admin); an area manager only sees their own
+
+        $props = Cache::remember('trends:'.md5(json_encode([$by, $source, $ids])).':'.today()->toDateString(), self::CACHE_SECONDS, fn () => $this->props($by, $source, $ids));
+
+        return Inertia::render('admin/trends', $props);
+    }
+
+    private function props(string $by, ?string $source, ?array $ids): array
+    {
         $periods = $this->periods($by);
         $from = $periods[0]['from'];
         $to = end($periods)['to'];
@@ -48,10 +60,11 @@ class TrendsController extends Controller
 
         // ---- stores: units per store per period
         $perStore = [];
-        $lineQuery = fn () => DB::table('order_items')->join('orders', 'orders.id', '=', 'order_items.order_id')
-            ->whereIn('orders.status', Order::ACTIVE)->when($ids !== null, fn ($q) => $q->whereIn('orders.store_id', $ids))->whereBetween('orders.order_date', [$from, $to]);
+        // what each store ordered, from the daily totals (see App\Services\OrderSummary) rather than the order lines
+        $totals = fn () => ($ids === null ? DB::table('daily_catalog_totals') : DB::table('daily_item_totals')->whereIn('store_id', $ids))->whereBetween('order_date', [$from, $to]);
+        $perStoreTotals = fn () => DB::table('daily_item_totals')->when($ids !== null, fn ($q) => $q->whereIn('store_id', $ids))->whereBetween('order_date', [$from, $to]);
 
-        foreach ($lineQuery()->groupBy('orders.store_id', 'orders.order_date')->get(['orders.store_id as store_id', 'orders.order_date as day', DB::raw('SUM(order_items.quantity) as units')]) as $r) {
+        foreach ($perStoreTotals()->groupBy('store_id', 'order_date')->get(['store_id', 'order_date as day', DB::raw('SUM(units) as units')]) as $r) {
             if (($i = $slot(substr((string) $r->day, 0, 10))) === null) {
                 continue;
             }
@@ -72,8 +85,8 @@ class TrendsController extends Controller
         // ---- items: units per item per period (optionally one catalog)
         $perItem = [];
         $meta = [];
-        $itemQuery = $lineQuery()->when($source, fn ($q) => $q->where('order_items.source', $source));
-        foreach ($itemQuery->groupBy('order_items.product_code', 'orders.order_date')->get(['order_items.product_code as code', DB::raw('MAX(order_items.name) as name'), DB::raw('MAX(order_items.source) as source'), DB::raw('MAX(order_items.category) as category'), 'orders.order_date as day', DB::raw('SUM(order_items.quantity) as units')]) as $r) {
+        $itemQuery = $totals()->when($source, fn ($q) => $q->where('source', $source));
+        foreach ($itemQuery->groupBy('product_code', 'order_date')->get(['product_code as code', DB::raw('MAX(name) as name'), DB::raw('MAX(source) as source'), DB::raw('MAX(category) as category'), 'order_date as day', DB::raw('SUM(units) as units')]) as $r) {
             if (($i = $slot(substr((string) $r->day, 0, 10))) === null) {
                 continue;
             }
@@ -85,7 +98,7 @@ class TrendsController extends Controller
         $items = collect($perItem)->map(fn (array $series, string $code) => ['code' => $code] + $meta[$code] + ['series' => $series] + $this->compare($series))
             ->sortByDesc(fn ($r) => [$r['latest'], $r['sum']])->values();
 
-        return Inertia::render('admin/trends', [
+        return [
             'by' => $by,
             'source' => $source,
             'periods' => array_map(fn ($p) => ['label' => $p['label'], 'long' => $p['long'], 'partial' => $p['partial']], $periods),
@@ -94,7 +107,7 @@ class TrendsController extends Controller
             'items' => $items->take(self::ITEM_ROWS)->all(),
             'item_count' => $items->count(),
             'quiet_stores' => collect($stores)->filter(fn ($s) => $s['active'] && $s['latest'] === 0 && $s['previous'] > 0)->pluck('name')->values()->all(),
-        ]);
+        ];
     }
 
     /** The last 12 weeks (Monday to Sunday) or calendar months, oldest first; the final one is the running period. */

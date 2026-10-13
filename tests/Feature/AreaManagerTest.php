@@ -173,7 +173,7 @@ class AreaManagerTest extends TestCase
         $this->assertSame(2, $all['ecpos_problems']);
     }
 
-    public function test_a_manager_cannot_open_admin_pages_or_place_orders(): void
+    public function test_a_manager_cannot_open_admin_pages(): void
     {
         $m = $this->f['manager'];
 
@@ -183,8 +183,47 @@ class AreaManagerTest extends TestCase
         $this->actingAs($m)->post('/retails', ['product_code' => 'X1', 'description' => 'x', 'source' => 'bw_products'])->assertForbidden();
         $this->actingAs($m)->post('/admin/sync-rules', ['type' => 'group', 'match' => 'ABC', 'source' => 'warehouse'])->assertForbidden();
         $this->actingAs($m)->post('/admin/area-managers', ['name' => 'x', 'email' => 'x@y.test', 'password' => 'abcdefgh1', 'stores' => [1]])->assertForbidden();
-        $this->actingAs($m)->post('/orders/draft')->assertForbidden();
-        $this->actingAs($m)->get('/orders/create')->assertForbidden();
+    }
+
+    public function test_a_manager_places_an_order_for_one_of_their_stores(): void
+    {
+        $m = $this->f['manager'];
+        $a1 = $this->f['A1']['store'];
+        $this->f['A1']['order']->update(['status' => 'cancelled']); // A1 has no active order today any more
+
+        // the store must be named, and must be one of theirs
+        $this->actingAs($m)->postJson('/orders/draft')->assertUnprocessable();
+        $this->actingAs($m)->postJson('/orders/draft', ['store' => $this->f['B1']['store']->id])->assertForbidden();
+        $this->actingAs($m)->get('/orders/create')->assertRedirect('/orders'); // no store picked yet
+
+        $this->actingAs($m)->postJson('/orders/draft', ['store' => $a1->id])->assertOk()->assertJsonPath('store.code', 'A1');
+        $this->actingAs($m)->get('/orders/create')->assertOk();
+
+        $this->actingAs($m)->put('/orders/draft/lines', ['lines' => [['item_id' => $this->f['items']['bw']->id, 'quantity' => 3]]])->assertOk();
+        $placed = $this->actingAs($m)->post('/orders', ['lines' => [['item_id' => $this->f['items']['bw']->id, 'quantity' => 3]]]);
+
+        $order = Order::where('store_id', $a1->id)->where('status', 'pending')->firstOrFail();
+        $placed->assertRedirect(route('orders.show', $order));
+        $this->assertSame($m->id, $order->user_id);
+
+        $this->actingAs($m)->post("/orders/{$order->id}/post")->assertRedirect();
+        $this->assertSame('posted', $order->refresh()->status);
+    }
+
+    public function test_a_manager_cannot_place_or_post_for_a_store_that_is_not_theirs(): void
+    {
+        $m = $this->f['manager'];
+        $b1 = $this->f['B1'];
+        $pending = $this->seedOrder($b1['store'], $b1['user'], 'pending', now()->addDay()->toDateString(), [[$this->f['items']['bw'], 1]]);
+
+        $this->actingAs($m)->post("/orders/{$pending->id}/post")->assertNotFound();
+        $this->actingAs($m)->postJson('/orders/draft', ['store' => $b1['store']->id])->assertForbidden();
+        $this->assertSame('pending', $pending->refresh()->status);
+    }
+
+    public function test_the_one_order_a_day_rule_applies_to_a_manager_too(): void
+    {
+        $this->actingAs($this->f['manager'])->postJson('/orders/draft', ['store' => $this->f['A1']['store']->id])->assertStatus(409);
     }
 
     public function test_a_manager_with_no_stores_sees_nothing(): void

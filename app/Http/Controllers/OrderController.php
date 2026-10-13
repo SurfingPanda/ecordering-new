@@ -7,6 +7,7 @@ use App\Models\Item;
 use App\Models\Order;
 use App\Models\Store;
 use App\Models\User;
+use App\Services\OrderSummary;
 use App\Services\SubmissionDeadline;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
@@ -64,7 +65,15 @@ class OrderController extends Controller
     public function show(Request $request, Order $order): Response|RedirectResponse
     {
         if ($order->status === Order::DRAFT) {
-            return $request->user()->isStore() ? to_route('orders.create') : abort(404);
+            $user = $request->user();
+            if ($user->isStore()) {
+                return to_route('orders.create');
+            }
+            // an area manager only ever opens a draft they started themselves, for one of their own stores
+            abort_unless($user->isAreaManager() && $order->user_id === $user->id, 404);
+            $request->session()->put(self::STORE_KEY, $order->store_id);
+
+            return to_route('orders.create');
         }
 
         $order = Order::withUnits()
@@ -111,8 +120,8 @@ class OrderController extends Controller
             ],
             // what the signed-in user may do with this order (the server re-checks on every action)
             'can' => [
-                'post' => $user->isStore() && $order->status === 'pending',
-                'reset' => $user->isStore() && $order->status === 'pending',
+                'post' => $this->mayPlaceFor($user, $order->store_id) && $order->status === 'pending',
+                'reset' => $this->mayPlaceFor($user, $order->store_id) && $order->status === 'pending',
                 'cancel' => $user->isManagement() && $order->status === 'posted',
                 'cancel_needs_reason' => true,
                 'send_ecpos' => $user->isManagement() && $order->status === 'posted' && ! $order->ecpos_sent_at && ! in_array($order->ecpos_state, ['queued', 'sending'], true) && app(\App\Services\EcposOrders::class)->enabled(),
@@ -126,10 +135,10 @@ class OrderController extends Controller
      * The store user's open draft, created on demand. The draft is what gives a new order its TR number
      * before any items are entered; reusing it means abandoned "New order" clicks don't burn numbers.
      */
-    private function draftFor(User $user): Order
+    private function draftFor(User $user, Store $store): Order
     {
         return Order::firstOrCreate(
-            ['user_id' => $user->id, 'store_id' => $user->store_id, 'status' => Order::DRAFT],
+            ['user_id' => $user->id, 'store_id' => $store->id, 'status' => Order::DRAFT],
             ['order_date' => today()->toDateString()],
         );
     }
@@ -141,17 +150,18 @@ class OrderController extends Controller
     public function draft(Request $request): JsonResponse
     {
         $user = $request->user();
-        $this->assertStoreCanOrder($user);
+        $store = $this->pickStore($request); // an area manager names the store here; a store account is always its own
+        $this->assertStoreCanOrder($user, $store);
 
         // the date the prompt starts on: today, unless the store asked for another one ("order for another date")
         $date = $request->validate(['date' => ['sometimes', ...$this->dateWindow()]])['date'] ?? today()->toDateString();
 
         // A store can only have one TR per day. If it already has one for this date, say so right away
         // (nothing is reserved), so the prompt can tell the user instead of letting them fill in a form.
-        if ($existing = $this->existingOrderOn($user->store, $date)) {
+        if ($existing = $this->existingOrderOn($store, $date)) {
             return response()->json([
                 'error' => 'already_ordered',
-                'message' => $this->alreadyOrderedMessage($user->store, $existing, $date),
+                'message' => $this->alreadyOrderedMessage($store, $existing, $date),
                 'order' => [
                     'id' => $existing->id,
                     'number' => $existing->number(),
@@ -162,7 +172,7 @@ class OrderController extends Controller
             ], 409);
         }
 
-        $draft = $this->draftFor($user);
+        $draft = $this->draftFor($user, $store);
 
         // an order already in progress (items entered): carry on with it, don't ask for a date again
         if (! $request->has('date') && $draft->lines()->exists()) {
@@ -172,21 +182,32 @@ class OrderController extends Controller
         $draft->update(['order_date' => $date]);
 
         return response()->json([
+            'store' => ['id' => $store->id, 'code' => $store->code, 'name' => $store->name],
             'id' => $draft->id,
             'number' => $draft->number(),
             'order_date' => $draft->order_date->toDateString(),
         ]);
     }
 
+    /** The stores an area manager can place an order for (shown in the "New order" prompt). */
+    public function stores(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        abort_unless($user->isAreaManager(), 403, 'Only an area manager picks a store to order for.');
+
+        return response()->json(['stores' => Store::whereIn('id', $user->visibleStoreIds() ?? [])->where('is_active', true)->orderBy('name')->get(['id', 'code', 'name'])]);
+    }
+
     /** Saves the date chosen in the prompt, then opens the order sheet. */
     public function updateDraft(Request $request): RedirectResponse
     {
         $user = $request->user();
-        $this->assertStoreCanOrder($user);
+        $store = $this->orderingStore($request);
+        $this->assertStoreCanOrder($user, $store);
 
         $data = $request->validate(['order_date' => $this->dateRules()]);
-        $draft = $this->draftFor($user);
-        $this->assertDateIsFree($user->store, $data['order_date'], $draft);
+        $draft = $this->draftFor($user, $store);
+        $this->assertDateIsFree($store, $data['order_date'], $draft);
         $draft->update($data);
 
         return to_route('orders.create');
@@ -198,10 +219,9 @@ class OrderController extends Controller
      */
     public function last(Request $request): JsonResponse
     {
-        $user = $request->user();
-        abort_unless($user->isStore() && $user->store_id, 403, 'Only store accounts can place orders.');
+        $store = $this->orderingStore($request);
 
-        $order = Order::where('store_id', $user->store_id)->where('status', '!=', Order::DRAFT)->with('lines')->orderByDesc('id')->first();
+        $order = Order::where('store_id', $store->id)->where('status', '!=', Order::DRAFT)->with('lines')->orderByDesc('id')->first();
         if (! $order) {
             return response()->json(['order' => null]);
         }
@@ -225,8 +245,7 @@ class OrderController extends Controller
      */
     public function saveDraft(Request $request): JsonResponse
     {
-        $user = $request->user();
-        abort_unless($user->isStore() && $user->store_id, 403, 'Only store accounts can place orders.');
+        $store = $this->orderingStore($request);
 
         $data = $request->validate([
             'notes' => ['nullable', 'string', 'max:1000'],
@@ -235,7 +254,7 @@ class OrderController extends Controller
             'lines.*.quantity' => ['required', 'integer', 'min:1', 'max:9999'],
         ]);
 
-        $draft = $this->draftFor($user);
+        $draft = $this->draftFor($request->user(), $store);
 
         DB::transaction(function () use ($draft, $data) {
             // the order date was chosen when the order was started and is not editable from the sheet
@@ -244,14 +263,17 @@ class OrderController extends Controller
             $quantities = collect($data['lines'])->groupBy('item_id')->map(fn ($g) => $g->sum('quantity'));
             $items = Item::whereIn('id', $quantities->keys())->get()->keyBy('id');
 
-            $draft->lines()->delete();
-            foreach ($quantities as $itemId => $qty) {
-                $item = $items[$itemId];
-                $draft->lines()->create([
-                    'item_id' => $item->id, 'product_code' => $item->product_code, 'name' => $item->description,
-                    'source' => $item->source, 'category' => $item->category, 'quantity' => min(9999, $qty),
-                ]);
-            }
+            // a draft is never counted, so there is nothing to keep in step
+            OrderSummary::withoutRefresh(function () use ($draft, $quantities, $items) {
+                $draft->lines()->delete();
+                foreach ($quantities as $itemId => $qty) {
+                    $item = $items[$itemId];
+                    $draft->lines()->create([
+                        'item_id' => $item->id, 'product_code' => $item->product_code, 'name' => $item->description,
+                        'source' => $item->source, 'category' => $item->category, 'quantity' => min(9999, $qty),
+                    ]);
+                }
+            });
         });
 
         return response()->json(['saved_at' => now()->toIso8601String(), 'lines' => count($data['lines'])]);
@@ -284,19 +306,22 @@ class OrderController extends Controller
     public function create(Request $request): Response
     {
         $user = $request->user();
-        $draft = $this->draftFor($user);
+        $store = $this->orderingStore($request, to_route('orders.index'));
+        $draft = $this->draftFor($user, $store);
 
         return Inertia::render('orders/create', [
+            'store' => ['id' => $store->id, 'code' => $store->code, 'name' => $store->name],
+            'for_store' => $user->isAreaManager(), // an area manager is ordering on behalf of this store
             'order' => ['id' => $draft->id, 'number' => $draft->number(), 'order_date' => $draft->order_date->toDateString()],
             // what was already entered on this draft (autosaved), so leaving the page doesn't lose it
             'saved' => [
                 'notes' => $draft->notes ?? '',
                 'lines' => $draft->lines()->whereIn('item_id', Item::active()->select('id'))->get(['item_id', 'quantity'])->map(fn ($l) => ['item_id' => $l->item_id, 'quantity' => $l->quantity]),
             ],
-            'blocked' => $this->closedReason($user) ?? ($this->existingOrderOn($user->store, $draft->order_date->toDateString(), $draft)
-                ? $this->alreadyOrderedMessage($user->store, $this->existingOrderOn($user->store, $draft->order_date->toDateString(), $draft), $draft->order_date->toDateString())
+            'blocked' => $this->closedReason($user, $store) ?? ($this->existingOrderOn($store, $draft->order_date->toDateString(), $draft)
+                ? $this->alreadyOrderedMessage($store, $this->existingOrderOn($store, $draft->order_date->toDateString(), $draft), $draft->order_date->toDateString())
                 : null),
-            'staff' => app(\App\Services\EcposStaff::class)->forStore($user->store?->ecpos_store_id),
+            'staff' => app(\App\Services\EcposStaff::class)->forStore($store->ecpos_store_id),
             'items' => Item::active()->select(['id', 'source', 'product_code', 'description', 'category', 'moq'])->orderBy('description')->get()
                 ->map(fn (Item $i) => [
                     'id' => $i->id,
@@ -312,9 +337,10 @@ class OrderController extends Controller
     public function store(Request $request): RedirectResponse
     {
         $user = $request->user();
+        $orderingStore = $this->orderingStore($request);
 
         // the order date is whatever was chosen when the order was started; the sheet can't change it
-        $staff = app(\App\Services\EcposStaff::class)->forStore($user->store?->ecpos_store_id);
+        $staff = app(\App\Services\EcposStaff::class)->forStore($orderingStore->ecpos_store_id);
         $data = $request->validate([
             'notes' => ['nullable', 'string', 'max:1000'],
             // when ECPOS lists the store's staff, say who is ordering (only a listed name is accepted)
@@ -329,13 +355,13 @@ class OrderController extends Controller
             'lines.min' => 'Enter a quantity for at least one item.',
         ]);
 
-        $order = DB::transaction(function () use ($data, $user) {
+        $order = DB::transaction(function () use ($data, $user, $orderingStore) {
             // Serialise submissions per store, then re-check everything inside the lock so two requests
             // racing the cutoff can't both slip through, and a failure leaves no partial order behind.
-            $store = $this->lockedStore($user);
+            $store = $this->lockedStore($orderingStore);
             $this->assertStoreCanOrder($user, $store);
 
-            $order = $this->draftFor($user);
+            $order = $this->draftFor($user, $store);
             $data['order_date'] = $order->order_date->toDateString();
             $this->assertDateIsFree($store, $data['order_date'], $order);
 
@@ -344,20 +370,24 @@ class OrderController extends Controller
             $items = Item::whereIn('id', $quantities->keys())->get()->keyBy('id');
             $this->assertMinimums($quantities, $items);
 
-            $order->lines()->delete();
-            $order->update(['order_date' => $data['order_date'], 'notes' => $data['notes'] ?? null, 'staff_name' => $data['staff_name'] ?? null, 'status' => 'pending']);
+            // the order becomes counted as soon as it is pending: write it and its lines, then add them up once
+            OrderSummary::withoutRefresh(function () use ($order, $data, $quantities, $items) {
+                $order->lines()->delete();
+                $order->update(['order_date' => $data['order_date'], 'notes' => $data['notes'] ?? null, 'staff_name' => $data['staff_name'] ?? null, 'status' => 'pending']);
 
-            foreach ($quantities as $itemId => $qty) {
-                $item = $items[$itemId];
-                $order->lines()->create([
-                    'item_id' => $item->id,
-                    'product_code' => $item->product_code,
-                    'name' => $item->description,
-                    'source' => $item->source,
-                    'category' => $item->category,
-                    'quantity' => $qty,
-                ]);
-            }
+                foreach ($quantities as $itemId => $qty) {
+                    $item = $items[$itemId];
+                    $order->lines()->create([
+                        'item_id' => $item->id,
+                        'product_code' => $item->product_code,
+                        'name' => $item->description,
+                        'source' => $item->source,
+                        'category' => $item->category,
+                        'quantity' => $qty,
+                    ]);
+                }
+            });
+            OrderSummary::refreshOrder($order->refresh());
 
             $order->record('placed', $user);
 
@@ -376,8 +406,10 @@ class OrderController extends Controller
     {
         $user = $request->user();
 
+        abort_unless($this->mayPlaceFor($user, $order->store_id), 403, 'Only a store account or its area manager can reset an order.');
+
         DB::transaction(function () use ($order, $user) {
-            $store = $this->lockedStore($user);
+            $store = $this->lockedStore(Store::findOrFail($order->store_id));
             $this->assertStoreCanOrder($user, $store);
 
             $fresh = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
@@ -387,7 +419,7 @@ class OrderController extends Controller
             }
 
             // one working draft per user: an empty one is simply replaced, one with items entered is never thrown away
-            $current = Order::where('user_id', $user->id)->where('store_id', $user->store_id)->where('status', Order::DRAFT)->first();
+            $current = Order::where('user_id', $user->id)->where('store_id', $store->id)->where('status', Order::DRAFT)->first();
             if ($current && $current->lines()->exists()) {
                 throw ValidationException::withMessages(['reset' => 'You have another order in progress. Place it first, then reset this one.']);
             }
@@ -396,6 +428,8 @@ class OrderController extends Controller
             $fresh->update(['status' => Order::DRAFT, 'posted_at' => null]);
             $fresh->record('reset', $user);
         });
+
+        $request->session()->put(self::STORE_KEY, $order->store_id);
 
         return to_route('orders.create');
     }
@@ -449,10 +483,10 @@ class OrderController extends Controller
     public function post(Request $request, Order $order): RedirectResponse
     {
         $user = $request->user();
-        abort_unless($user->isStore(), 403);
+        abort_unless($this->mayPlaceFor($user, $order->store_id), 403);
 
         DB::transaction(function () use ($order, $user) {
-            $store = $this->lockedStore($user);
+            $store = $this->lockedStore(Store::findOrFail($order->store_id));
             $this->assertStoreCanOrder($user, $store);
 
             $fresh = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
@@ -532,38 +566,88 @@ class OrderController extends Controller
 
     /* ------------------------------------------------------------------ rules */
 
-    private function lockedStore(User $user): Store
-    {
-        abort_unless($user->isStore() && $user->store_id, 403, 'Only store accounts can place orders.');
+    /** Session key holding the store an area manager is currently placing an order for. */
+    private const STORE_KEY = 'ordering_store_id';
 
-        return Store::whereKey($user->store_id)->lockForUpdate()->firstOrFail();
+    /** A store account places for its own store; an area manager for any store they handle. */
+    private function mayPlaceFor(User $user, ?int $storeId): bool
+    {
+        if ($storeId === null) {
+            return false;
+        }
+
+        return $user->isStore()
+            ? (int) $user->store_id === $storeId
+            : ($user->isAreaManager() && in_array($storeId, $user->visibleStoreIds() ?? [], true));
     }
 
-    /** Why this user can't place/post right now, or null if they can. */
-    private function closedReason(User $user): ?string
+    /**
+     * The store this request orders for: a store account's own store, or (area manager) the store they picked in the
+     * "New order" prompt, remembered in the session. Anyone else, or a store that isn't theirs, is refused.
+     */
+    private function orderingStore(Request $request, ?RedirectResponse $fallback = null): Store
     {
-        if (! $user->isStore() || ! $user->store) {
-            return 'Only store accounts can place orders.';
-        }
-        if (! $user->store->is_active) {
-            return 'Your store is deactivated, so new orders can’t be submitted. Please contact an admin.';
-        }
-        if (! $this->deadlines->isOpen($user->store)) {
-            $d = $this->deadlines->for($user->store);
+        $user = $request->user();
+        abort_unless($user->isStore() || $user->isAreaManager(), 403, 'Only store accounts and area managers can place orders.');
 
-            return 'Today’s submission deadline ('.$d['at']->format('g:i A').') has passed. New orders can’t be submitted until tomorrow, unless an admin extends your deadline.';
+        if ($user->isStore()) {
+            abort_unless($user->store_id, 403, 'Only store accounts can place orders.');
+
+            return Store::findOrFail($user->store_id);
+        }
+
+        $id = (int) $request->session()->get(self::STORE_KEY);
+        if (! $this->mayPlaceFor($user, $id)) {
+            if ($fallback) {
+                throw new \Illuminate\Http\Exceptions\HttpResponseException($fallback);
+            }
+            abort(409, 'Choose a store to place the order for.');
+        }
+
+        return Store::findOrFail($id);
+    }
+
+    /** Like orderingStore, but an area manager names the store in the request (`store`), which is then remembered. */
+    private function pickStore(Request $request): Store
+    {
+        $user = $request->user();
+
+        if ($user->isAreaManager()) {
+            $id = (int) $request->validate(['store' => ['required', 'integer']])['store'];
+            abort_unless($this->mayPlaceFor($user, $id), 403, 'That store is not one of yours.');
+            $request->session()->put(self::STORE_KEY, $id);
+        }
+
+        return $this->orderingStore($request);
+    }
+
+    private function lockedStore(Store $store): Store
+    {
+        return Store::whereKey($store->id)->lockForUpdate()->firstOrFail();
+    }
+
+    /** Why this user can't place/post for this store right now, or null if they can. */
+    private function closedReason(User $user, Store $store): ?string
+    {
+        $you = $user->isAreaManager() ? $store->name : 'Your store';
+
+        if (! $store->is_active) {
+            return "{$you} is deactivated, so new orders can’t be submitted. Please contact an admin.";
+        }
+        if (! $this->deadlines->isOpen($store)) {
+            $d = $this->deadlines->for($store);
+
+            return 'Today’s submission deadline ('.$d['at']->format('g:i A').') has passed. New orders can’t be submitted until tomorrow, unless an admin extends '.($user->isAreaManager() ? 'the store’s' : 'your').' deadline.';
         }
 
         return null;
     }
 
-    private function assertStoreCanOrder(User $user, ?Store $store = null): void
+    private function assertStoreCanOrder(User $user, Store $store): void
     {
-        abort_unless($user->isStore(), 403, 'Only store accounts can place orders.');
+        abort_unless($user->isStore() || $user->isAreaManager(), 403, 'Only store accounts and area managers can place orders.');
 
-        $user->setRelation('store', $store ?? $user->store);
-
-        if ($reason = $this->closedReason($user)) {
+        if ($reason = $this->closedReason($user, $store)) {
             throw ValidationException::withMessages(['deadline' => $reason]);
         }
     }

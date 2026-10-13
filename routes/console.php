@@ -14,6 +14,9 @@ Schedule::command('queue:work --stop-when-empty --tries=1 --max-time=55')->every
 // the end-of-day "who ordered, who didn't" email for area managers and admins (time: NOTIFY_SUMMARY_TIME)
 Schedule::command('orders:daily-summary')->dailyAt(config('notifications.summary_time'))->withoutOverlapping()->onOneServer();
 
+// safety net for the dashboard/trends totals (they follow every order change on their own): rebuild the last 45 days each night
+Schedule::command('orders:rebuild-summary --days=45')->dailyAt('03:30')->withoutOverlapping()->onOneServer();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');

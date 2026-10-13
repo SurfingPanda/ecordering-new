@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
-import { Link, router } from '@inertiajs/react';
-import { CalendarCheck, Plus } from 'lucide-react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link, router, usePage } from '@inertiajs/react';
+import { CalendarCheck, ChevronRight, Plus, Store as StoreIcon } from 'lucide-react';
 
 import { StatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { formatDay } from '@/lib/format';
 import { field } from '@/lib/ui';
-import type { OrderStatus } from '@/types';
+import type { OrderStatus, SharedProps } from '@/types';
 
 function csrfToken() {
     const match = document.cookie.match(/(?:^|; )XSRF-TOKEN=([^;]*)/);
@@ -32,18 +32,34 @@ interface ExistingOrder {
     url: string;
 }
 
-const NewOrderContext = createContext<{ start: (date?: string) => void }>({ start: () => {} });
+interface PickableStore {
+    id: number;
+    code: string;
+    name: string;
+}
+
+const NewOrderContext = createContext<{ start: (date?: string, storeId?: number) => void }>({ start: () => {} });
 
 /** Starts the "new order" flow from anywhere inside the app layout (buttons, the sidebar link). */
 export const useNewOrder = () => useContext(NewOrderContext);
 
 /**
  * The new-order flow, mounted once for the whole layout:
+ *   0. area managers first pick which of their stores the order is for (e.g. when the store's tablet isn't available),
  *   1. ask the server for a TR number for a date (today unless another date is asked for),
  *   2. if the store already has a TR for that date -> "You already have an order" (a store can only place one per day),
  *   3. otherwise show the reserved TR number with the date picker, and Continue opens the order sheet.
  */
 export function NewOrderProvider({ children }: { children: ReactNode }) {
+    const role = usePage<SharedProps>().props.auth.user.role;
+
+    // step 0 (area managers): which store is this order for?
+    const [picking, setPicking] = useState(false);
+    const [stores, setStores] = useState<PickableStore[] | null>(null);
+    const [storesError, setStoresError] = useState<string | null>(null);
+    const chosen = useRef<PickableStore | null>(null);
+    const [storeName, setStoreName] = useState<string | null>(null);
+
     // step 3: the prompt
     const [open, setOpen] = useState(false);
     const [number, setNumber] = useState<string | null>(null);
@@ -56,17 +72,45 @@ export function NewOrderProvider({ children }: { children: ReactNode }) {
     // step 2: the store already has an order for that day
     const [existing, setExisting] = useState<{ order: ExistingOrder; today: boolean } | null>(null);
 
-    const start = useCallback(async (requestedDate?: string) => {
-        // already filling in an order: there is nothing to start, stay on it
-        if (!requestedDate && window.location.pathname === '/orders/create') return;
+    const pickStore = useCallback(async () => {
+        setOpen(false);
+        setExisting(null);
+        setStoresError(null);
+        setPicking(true);
+        try {
+            const res = await fetch('/orders/stores', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+            if (!res.ok) throw new Error();
+            setStores((await res.json()).stores);
+        } catch {
+            setStoresError('Couldn’t load your stores. Please try again.');
+        }
+    }, []);
 
+    const start = useCallback(async (requestedDate?: string, storeId?: number) => {
+        const manager = role === 'area_manager';
+
+        // already filling in an order: there is nothing to start, stay on it (a manager may want another store, so they are asked)
+        if (!manager && !requestedDate && window.location.pathname === '/orders/create') return;
+
+        // an area manager always names the store first
+        if (manager && storeId === undefined && (!requestedDate || !chosen.current)) {
+            void pickStore();
+            return;
+        }
+
+        setPicking(false);
         setExisting(null);
         setNumber(null);
         setError(null);
         setDateError(null);
 
+        const params = new URLSearchParams();
+        if (requestedDate) params.set('date', requestedDate);
+        if (manager) params.set('store', String(storeId ?? chosen.current?.id));
+        const query = params.toString();
+
         try {
-            const res = await fetch('/orders/draft' + (requestedDate ? `?date=${requestedDate}` : ''), {
+            const res = await fetch('/orders/draft' + (query ? `?${query}` : ''), {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { Accept: 'application/json', 'X-XSRF-TOKEN': csrfToken() },
@@ -90,6 +134,7 @@ export function NewOrderProvider({ children }: { children: ReactNode }) {
                 return;
             }
             setOpen(true);
+            setStoreName(manager ? (data.store?.name ?? chosen.current?.name ?? null) : null);
             setNumber(data.number);
             setToday((t) => t ?? data.order_date); // remember the server's "today" for the date limits
             setDate(data.order_date);
@@ -97,7 +142,7 @@ export function NewOrderProvider({ children }: { children: ReactNode }) {
             setOpen(true);
             setError(e instanceof Error ? e.message : 'Couldn’t reserve an ID. Please try again.');
         }
-    }, []);
+    }, [role, pickStore]);
 
     const proceed = () => {
         setSaving(true);
@@ -117,6 +162,48 @@ export function NewOrderProvider({ children }: { children: ReactNode }) {
     return (
         <NewOrderContext.Provider value={value}>
             {children}
+
+            {/* area managers: which store is this order for? */}
+            <Dialog open={picking} onOpenChange={setPicking}>
+                <DialogContent className="max-w-sm">
+                    <DialogTitle className="text-center">Place an order for which store?</DialogTitle>
+                    <DialogDescription className="text-center">Use this when a store can’t place its own order, e.g. its tablet isn’t available.</DialogDescription>
+
+                    <div className="my-4 max-h-80 space-y-1.5 overflow-y-auto">
+                        {storesError ? (
+                            <p className="py-4 text-center text-sm font-medium text-destructive">{storesError}</p>
+                        ) : stores === null ? (
+                            <p className="py-4 text-center text-sm text-muted-foreground">Loading stores…</p>
+                        ) : stores.length === 0 ? (
+                            <p className="py-4 text-center text-sm text-muted-foreground">You don’t have any active stores assigned.</p>
+                        ) : (
+                            stores.map((s) => (
+                                <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={() => {
+                                        chosen.current = s;
+                                        void start(undefined, s.id);
+                                    }}
+                                    className="flex w-full items-center gap-3 rounded-md border border-border px-3 py-2.5 text-left text-sm transition-colors hover:border-secondary hover:bg-[#f2f4f8]"
+                                >
+                                    <StoreIcon className="size-4 shrink-0 text-muted-foreground" />
+                                    <span className="min-w-0 flex-1 truncate">
+                                        <span className="font-mono text-xs font-semibold tracking-wide text-muted-foreground">{s.code}</span> <span className="font-medium">{s.name}</span>
+                                    </span>
+                                    <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                                </button>
+                            ))
+                        )}
+                    </div>
+
+                    <div className="flex justify-center">
+                        <Button variant="ghost" size="sm" className="border border-border" onClick={() => setPicking(false)}>
+                            Cancel
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
 
             {/* "You already have an order" */}
             <Dialog open={existing !== null} onOpenChange={(o) => !o && setExisting(null)}>
@@ -171,6 +258,12 @@ export function NewOrderProvider({ children }: { children: ReactNode }) {
                     <DialogTitle className="text-center">Start a new order?</DialogTitle>
                     <DialogDescription className="text-center">Your order is saved under this reference. Once ECPOS accepts it, it becomes the ECPOS TR number.</DialogDescription>
 
+                    {storeName && (
+                        <p className="mt-3 text-center text-sm">
+                            For <span className="font-semibold">{storeName}</span>
+                        </p>
+                    )}
+
                     <div className="my-5 rounded-md border border-border bg-[#f2f4f8] px-4 py-4 text-center">
                         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Order reference</p>
                         {error ? (
@@ -215,7 +308,7 @@ export function NewOrderProvider({ children }: { children: ReactNode }) {
                             Cancel
                         </Button>
                         {error ? (
-                            <Button variant="secondary" size="sm" onClick={() => start()}>
+                            <Button variant="secondary" size="sm" onClick={() => start(undefined, chosen.current?.id)}>
                                 Check again
                             </Button>
                         ) : (

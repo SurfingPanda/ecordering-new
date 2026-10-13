@@ -38,8 +38,9 @@ Route::middleware('auth')->group(function () {
     // (a store account only ever gets its own store's orders; see Order::scopeVisibleTo / resolveRouteBinding).
     Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
 
-    // Placing, posting: store accounts only.
-    Route::middleware('role:store')->group(function () {
+    // Placing, posting: store accounts, and area managers on behalf of a store they handle (the controller checks which).
+    Route::middleware('role:store,area_manager')->group(function () {
+        Route::get('/orders/stores', [OrderController::class, 'stores'])->name('orders.stores');
         Route::post('/orders/draft', [OrderController::class, 'draft'])->name('orders.draft');
         Route::put('/orders/draft', [OrderController::class, 'updateDraft'])->name('orders.draft.update');
         Route::put('/orders/draft/lines', [OrderController::class, 'saveDraft'])->name('orders.draft.save');
