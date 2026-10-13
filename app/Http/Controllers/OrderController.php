@@ -355,10 +355,18 @@ class OrderController extends Controller
             'lines.min' => 'Enter a quantity for at least one item.',
         ]);
 
-        $order = DB::transaction(function () use ($data, $user, $orderingStore) {
+        $order = DB::transaction(function () use ($data, $user, $orderingStore, $request) {
             // Serialise submissions per store, then re-check everything inside the lock so two requests
             // racing the cutoff can't both slip through, and a failure leaves no partial order behind.
             $store = $this->lockedStore($orderingStore);
+
+            // A retry of a submit whose answer got lost (flaky connection, or one queued while offline): the order
+            // the device named is already placed, so hand back that order instead of failing or placing it twice.
+            $already = Order::whereKey($request->integer('order_id'))->where('user_id', $user->id)->where('store_id', $store->id)->whereIn('status', ['pending', 'posted'])->first();
+            if ($already) {
+                return $already;
+            }
+
             $this->assertStoreCanOrder($user, $store);
 
             $order = $this->draftFor($user, $store);
@@ -457,25 +465,7 @@ class OrderController extends Controller
         $orders = app(\App\Services\EcposOrders::class);
         abort_unless($orders->enabled(), 404);
 
-        DB::transaction(function () use ($order, $orders, $request) {
-            $fresh = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
-
-            if ($fresh->status !== 'posted' || $fresh->ecpos_sent_at || in_array($fresh->ecpos_state, ['queued', 'sending'], true)) {
-                throw ValidationException::withMessages(['ecpos' => $fresh->ecpos_sent_at
-                    ? "{$fresh->number()} was already sent to ECPOS."
-                    : (in_array($fresh->ecpos_state, ['queued', 'sending'], true) ? "{$fresh->number()} is already being sent." : 'Only a posted order can be sent to ECPOS.')]);
-            }
-
-            try {
-                $orders->prepare($fresh); // refuse right away if it can't be sent at all
-            } catch (\RuntimeException $e) {
-                throw ValidationException::withMessages(['ecpos' => $e->getMessage()]);
-            }
-
-            $fresh->forceFill(['ecpos_state' => 'queued', 'ecpos_attempts' => 0, 'ecpos_error' => null, 'ecpos_uncertain' => false, 'ecpos_state_at' => now(), 'ecpos_next_at' => null])->save();
-            $fresh->record('send_requested', $request->user(), 'Sending to ECPOS again');
-            \App\Jobs\SendOrderToEcpos::dispatch($fresh->id)->afterCommit();
-        });
+        $orders->requeue($order, $request->user());
 
         return back()->with('success', "Order {$order->number()} is being sent to ECPOS.");
     }

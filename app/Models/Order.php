@@ -71,6 +71,17 @@ class Order extends Model
             ->withSum(['lines as rejects_units' => fn ($q) => $q->where('source', 'rejects')], 'quantity');
     }
 
+    /**
+     * Posted orders that did not reach ECPOS and need someone: a failed send, or one stuck in the queue for 10+ minutes
+     * (is the worker running?). One rule shared by the sidebar badge, the daily summary and the ECPOS Queue page.
+     */
+    public function scopeEcposProblems(Builder $query): Builder
+    {
+        return $query->where('orders.status', 'posted')->where(fn ($q) => $q
+            ->where('orders.ecpos_state', 'failed')
+            ->orWhere(fn ($q) => $q->whereIn('orders.ecpos_state', ['queued', 'sending'])->where('orders.ecpos_state_at', '<', now()->subMinutes(10))));
+    }
+
     /** Admins see every store's orders; an area manager the stores given to them; a store account only its own. */
     public function scopeVisibleTo(Builder $query, User $user): Builder
     {

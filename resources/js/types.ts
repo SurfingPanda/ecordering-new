@@ -73,6 +73,7 @@ export interface OrderingToday {
     deadline_time: string;
     open: boolean;
     ecpos_problems: number; // posted orders that didn't reach ECPOS (failed, or stuck in the queue)
+    scheduler_stale: boolean; // the scheduler (and with it the ECPOS queue) has stopped
 }
 
 export interface SharedProps {

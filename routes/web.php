@@ -62,6 +62,8 @@ Route::middleware('auth')->group(function () {
     Route::middleware('role:admin,area_manager')->prefix('admin')->name('admin.')->group(function () {
         Route::get('/today', \App\Http\Controllers\Admin\TodayController::class)->name('today');
         Route::get('/trends', \App\Http\Controllers\Admin\TrendsController::class)->name('trends');
+        Route::get('/ecpos-queue', [\App\Http\Controllers\Admin\EcposQueueController::class, 'index'])->name('ecpos-queue');
+        Route::post('/ecpos-queue/retry', [\App\Http\Controllers\Admin\EcposQueueController::class, 'retryAll'])->name('ecpos-queue.retry');
         Route::get('/consolidated', [ConsolidatedOrderController::class, 'index'])->name('consolidated');
         Route::get('/consolidated/export', [ConsolidatedOrderController::class, 'export'])->name('consolidated.export');
     });

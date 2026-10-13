@@ -14,6 +14,7 @@ import {
     LogOut,
     Menu,
     CalendarCheck,
+    CloudUpload,
     TrendingUp,
     Package,
     PackageX,
@@ -34,6 +35,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { NewOrderProvider, useNewOrder } from '@/components/new-order-button';
+import QueuedOrderSync from '@/components/queued-order-sync';
 import { formatTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { DeadlineInfo, OrderingToday, SharedProps } from '@/types';
@@ -61,6 +63,7 @@ const adminNav: NavGroup[] = [
             { label: 'All Store Orders', href: '/admin/consolidated', icon: TableProperties },
             { label: 'Orders (TRs)', href: '/orders', icon: ReceiptText },
             { label: 'Ordering Trends', href: '/admin/trends', icon: TrendingUp },
+            { label: 'ECPOS Queue', href: '/admin/ecpos-queue', icon: CloudUpload },
         ],
     },
     {
@@ -94,6 +97,7 @@ const managerNav: NavGroup[] = [
             { label: 'All Store Orders', href: '/admin/consolidated', icon: TableProperties },
             { label: 'Orders (TRs)', href: '/orders', icon: ReceiptText },
             { label: 'Ordering Trends', href: '/admin/trends', icon: TrendingUp },
+            { label: 'ECPOS Queue', href: '/admin/ecpos-queue', icon: CloudUpload },
         ],
     },
 ];
@@ -174,7 +178,7 @@ function Shell({ title, actions, children }: Props) {
         items: g.items.map((i) =>
             i.href === '/admin/today' && waiting > 0
                 ? { ...i, badge: waiting }
-                : i.href === '/orders' && problems > 0 && auth.user.role !== 'store'
+                : i.href === '/admin/ecpos-queue' && problems > 0
                   ? { ...i, badge: problems, badgeTitle: `${problems} ${problems === 1 ? 'order needs' : 'orders need'} attention: not sent to ECPOS` }
                   : i,
         ),
@@ -370,6 +374,15 @@ function Shell({ title, actions, children }: Props) {
                     <main className="p-4 sm:p-6">
                         <DeadlineReminder role={auth.user.role} userId={auth.user.id} deadline={deadline} today={ordering_today} onPlaceOrder={startNewOrder} />
                         {auth.user.role === 'store' && deadline && typeof deadline.store_active === 'boolean' && <DeadlineNotice deadline={deadline} storeName={auth.user.store?.name} userId={auth.user.id} />}
+                        {ordering_today?.scheduler_stale && path !== '/admin/ecpos-queue' && (
+                            <Link href="/admin/ecpos-queue" className="mb-4 flex items-center gap-2 rounded-md border border-[#f0c58a] bg-[#fff6e5] px-4 py-2.5 text-sm text-[#7a4a00] hover:bg-[#ffefd0]">
+                                <AlertTriangle className="size-4 shrink-0" />
+                                <span>
+                                    <strong>The scheduler is not running</strong> — orders are not being sent to ECPOS. Tap for details.
+                                </span>
+                            </Link>
+                        )}
+                        {auth.user.role === 'store' && <QueuedOrderSync userId={auth.user.id} />}
                         {children}
                     </main>
                 </div>

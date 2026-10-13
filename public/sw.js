@@ -1,7 +1,7 @@
 // Minimal service worker: makes the app installable and shows a friendly
 // offline page. Pages and API responses are never cached (they are
 // per-user and carry CSRF tokens), so orders always reflect live data.
-const CACHE = 'bw-ordering-v1';
+const CACHE = 'bw-ordering-v2';
 const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {

@@ -3,7 +3,11 @@
 namespace App\Services;
 
 use App\Models\Item;
+use App\Jobs\SendOrderToEcpos;
 use App\Models\Order;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
 /** Sends a posted TR to ECPOS (POST /). Quantity only, no prices. */
@@ -12,6 +16,33 @@ class EcposOrders
     public function enabled(): bool
     {
         return (bool) config('ecpos.send_orders');
+    }
+
+    /**
+     * Queues a posted order that is not in ECPOS for another send. Refuses (ValidationException) one ECPOS already has,
+     * one already being sent, or one that can't be sent at all, so it never happens twice for the same order.
+     */
+    public function requeue(Order $order, User $by): void
+    {
+        DB::transaction(function () use ($order, $by) {
+            $fresh = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
+
+            if ($fresh->status !== 'posted' || $fresh->ecpos_sent_at || in_array($fresh->ecpos_state, ['queued', 'sending'], true)) {
+                throw ValidationException::withMessages(['ecpos' => $fresh->ecpos_sent_at
+                    ? "{$fresh->number()} was already sent to ECPOS."
+                    : (in_array($fresh->ecpos_state, ['queued', 'sending'], true) ? "{$fresh->number()} is already being sent." : 'Only a posted order can be sent to ECPOS.')]);
+            }
+
+            try {
+                $this->prepare($fresh); // refuse right away if it can't be sent at all
+            } catch (RuntimeException $e) {
+                throw ValidationException::withMessages(['ecpos' => $e->getMessage()]);
+            }
+
+            $fresh->forceFill(['ecpos_state' => 'queued', 'ecpos_attempts' => 0, 'ecpos_error' => null, 'ecpos_uncertain' => false, 'ecpos_state_at' => now(), 'ecpos_next_at' => null])->save();
+            $fresh->record('send_requested', $by, 'Sending to ECPOS again');
+            SendOrderToEcpos::dispatch($fresh->id)->afterCommit();
+        });
     }
 
     /**

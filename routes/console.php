@@ -5,6 +5,9 @@ use Illuminate\Support\Facades\Artisan;
 
 use Illuminate\Support\Facades\Schedule;
 
+// stamp every minute so the app can warn when the scheduler (and with it the ECPOS queue) has stopped
+Schedule::call(fn () => \App\Support\SchedulerHeartbeat::beat())->everyMinute()->name('scheduler-heartbeat');
+
 // keep BW Products in step with ECPOS every night (needs the Laravel scheduler running: php artisan schedule:work, or a cron job)
 Schedule::command('ecpos:sync-items')->dailyAt('02:00')->withoutOverlapping()->onOneServer();
 

@@ -48,9 +48,7 @@ class DailySummary
         }
 
         // a failed send, or one stuck in the queue for 10+ minutes (the same rule as the sidebar badge); any day, it still needs someone
-        $problems = Order::where('status', 'posted')->whereIn('store_id', $ids)->where(fn ($q) => $q
-            ->where('ecpos_state', 'failed')
-            ->orWhere(fn ($q) => $q->whereIn('ecpos_state', ['queued', 'sending'])->where('ecpos_state_at', '<', now()->subMinutes(10))))->count();
+        $problems = Order::ecposProblems()->whereIn('store_id', $ids)->count();
 
         return [
             'date' => $date,

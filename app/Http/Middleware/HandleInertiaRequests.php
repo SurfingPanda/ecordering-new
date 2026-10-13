@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Support\SchedulerHeartbeat;
 use App\Models\Store;
 use App\Services\SubmissionDeadline;
 use Illuminate\Http\Request;
@@ -76,9 +77,8 @@ class HandleInertiaRequests extends Middleware
             'deadline_at' => $at->toIso8601String(),
             'deadline_time' => $service->defaultTime(),
             // posted orders that did not reach ECPOS: a failed send, or one stuck in the queue for 10+ minutes (is the worker running?)
-            'ecpos_problems' => \App\Models\Order::where('status', 'posted')->when($ids !== null, fn ($q) => $q->whereIn('store_id', $ids))->where(fn ($q) => $q
-                ->where('ecpos_state', 'failed')
-                ->orWhere(fn ($q) => $q->whereIn('ecpos_state', ['queued', 'sending'])->where('ecpos_state_at', '<', now()->subMinutes(10))))->count(),
+            'ecpos_problems' => \App\Models\Order::ecposProblems()->when($ids !== null, fn ($q) => $q->whereIn('store_id', $ids))->count(),
+            'scheduler_stale' => SchedulerHeartbeat::isStale(),
             'open' => \Carbon\CarbonImmutable::now()->lessThanOrEqualTo($at),
         ];
     }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useForm } from '@inertiajs/react';
+import { Link, router, useForm, usePage } from '@inertiajs/react';
 import Swal from 'sweetalert2';
 import { ArrowLeft, Check, Copy, Loader2, Minus, Plus, Search, WifiOff, X } from 'lucide-react';
 
@@ -11,8 +11,9 @@ import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
 import { catalogLabel, catalogs } from '@/lib/charts';
 import { field, panel, selectCls, td, th } from '@/lib/ui';
+import { sendQueuedOrder, useQueuedOrder, writeQueued, type QueuedOrder } from '@/lib/queued-order';
 import { cn } from '@/lib/utils';
-import type { ItemSource } from '@/types';
+import type { ItemSource, SharedProps } from '@/types';
 
 interface CatalogItem {
     id: number;
@@ -81,6 +82,12 @@ export default function CreateOrder({ order, store, for_store, items, blocked, s
     const backup = useRef(readBackup(order.id));
     const [qty, setQty] = useState<Record<number, number>>(() => backup.current?.qty ?? Object.fromEntries(saved.lines.map((l) => [l.item_id, l.quantity])));
     const online = useOnline();
+    // a store account can place the order without a connection: it is kept on this device and sent by itself (see QueuedOrderSync)
+    const { auth } = usePage<SharedProps>().props;
+    const canQueue = auth.user.role === 'store';
+    const queuedOrder = useQueuedOrder(auth.user.id);
+    const isQueued = canQueue && queuedOrder?.orderId === order.id && !queuedOrder.rejected;
+    const [sending, setSending] = useState(false);
     const inputs = useRef<Record<number, HTMLInputElement | null>>({});
 
     // a shared tablet is usually used by the same person all shift, so remember the last pick on this device
@@ -275,19 +282,49 @@ export default function CreateOrder({ order, store, for_store, items, blocked, s
         }
     };
 
-    const submit = (e: React.FormEvent) => {
+    const submit = async (e: React.FormEvent) => {
         e.preventDefault();
-        form.transform((data) => ({
-            ...data,
-            lines: selected.map((i) => ({ item_id: i.id, quantity: qty[i.id] })),
-        }));
+        const lines = selected.map((i) => ({ item_id: i.id, quantity: qty[i.id] }));
+
+        if (!canQueue) {
+            form.transform((data) => ({ ...data, lines }));
+            submitting.current = true;
+            form.post('/orders', { onSuccess: () => writeBackup(order.id, null), onError: () => (submitting.current = false) });
+
+            return;
+        }
+
+        const record: QueuedOrder = { orderId: order.id, number: order.number, order_date: form.data.order_date, notes: form.data.notes, staff_name: form.data.staff_name, lines, queuedAt: new Date().toISOString() };
         submitting.current = true;
-        form.post('/orders', { onSuccess: () => writeBackup(order.id, null), onError: () => (submitting.current = false) });
+        if (!navigator.onLine) {
+            writeQueued(auth.user.id, record); // no connection: kept here, sent when it returns
+            return;
+        }
+
+        form.clearErrors();
+        setSending(true);
+        const result = await sendQueuedOrder(record);
+        setSending(false);
+        if (result.kind === 'sent') {
+            writeBackup(order.id, null);
+            router.visit(result.url);
+        } else if (result.kind === 'rejected') {
+            submitting.current = false;
+            form.setError(result.errors as Record<string, string>);
+        } else {
+            writeQueued(auth.user.id, result.kind === 'signed_out' ? { ...record, signedOut: true } : record); // the connection dropped mid-way: it stays queued
+        }
     };
+
+    // once the queued order is cancelled or refused, the sheet is editable (and autosaves) again
+    useEffect(() => {
+        if (canQueue && !sending && !isQueued) submitting.current = false;
+    }, [canQueue, sending, isQueued]);
 
     const lineError = (form.errors as Record<string, string>).lines ?? Object.entries(form.errors).find(([k]) => k.startsWith('lines.'))?.[1];
     // `blocked` is the server's reason ordering is closed (deadline passed / store deactivated); the server re-checks on submit
-    const canSubmit = selected.length > 0 && belowMin.length === 0 && (staff.length === 0 || form.data.staff_name !== '') && !form.processing && !blocked && online;
+    const canSubmit = selected.length > 0 && belowMin.length === 0 && (staff.length === 0 || form.data.staff_name !== '') && !form.processing && !sending && !isQueued && !blocked && (online || canQueue);
+    const placeLabel = (busy: string) => (isQueued ? 'Waiting to send' : form.processing || sending ? busy : !online && canQueue ? 'Place when online' : 'Place order');
     const closedMessage = blocked ?? (form.errors as Record<string, string>).deadline;
 
     return (
@@ -316,7 +353,7 @@ export default function CreateOrder({ order, store, for_store, items, blocked, s
                 <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-md border border-[#f0b8a6] bg-[#ffece6] px-4 py-3 text-sm text-[#9c2a00]">
                     <WifiOff className="mt-0.5 size-4 shrink-0" />
                     <p>
-                        <span className="font-semibold">No internet connection.</span> Keep entering quantities: they are kept on this device and sent as soon as you are back online. You can place the order once you are connected.
+                        <span className="font-semibold">No internet connection.</span> Keep entering quantities: they are kept on this device and sent as soon as you are back online. {canQueue ? 'You can place the order now: it is sent automatically once you are connected.' : 'You can place the order once you are connected.'}
                     </p>
                 </div>
             )}
@@ -587,7 +624,7 @@ export default function CreateOrder({ order, store, for_store, items, blocked, s
                         {lineError && <Alert className="mt-4">{lineError}</Alert>}
 
                         <Button type="submit" variant="secondary" className="mt-4 hidden w-full xl:inline-flex" disabled={!canSubmit}>
-                            {form.processing ? 'Placing order…' : 'Place order'}
+                            {placeLabel('Placing order…')}
                         </Button>
                     </div>
                 </aside>
@@ -598,7 +635,7 @@ export default function CreateOrder({ order, store, for_store, items, blocked, s
                         <span className="font-semibold">{selected.length}</span> items · <span className="font-semibold">{totalUnits}</span> units
                     </p>
                     <Button type="submit" variant="secondary" size="sm" disabled={!canSubmit}>
-                        {form.processing ? 'Placing…' : 'Place order'}
+                        {placeLabel('Placing…')}
                     </Button>
                 </div>
             </form>

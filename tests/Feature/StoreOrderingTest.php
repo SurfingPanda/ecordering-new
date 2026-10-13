@@ -499,4 +499,30 @@ class StoreOrderingTest extends TestCase
         $this->assertSame($last->number(), $this->actingAs($user)->getJson('/orders/last')->json('order.number'));
         $this->actingAs($this->makeAdmin())->getJson('/orders/last')->assertForbidden();
     }
+
+    public function test_repeating_a_submit_whose_answer_was_lost_returns_the_same_order(): void
+    {
+        $user = $this->makeStoreUser($this->makeStore());
+        $items = $this->makeItems();
+
+        $first = $this->actingAs($user)->post('/orders', $this->payload([[$items['bw'], 2]]));
+        $order = Order::where('status', 'pending')->firstOrFail();
+        $first->assertRedirect("/orders/{$order->id}");
+
+        // the device never heard back, so it sends the same order again (queued while offline, or a retry after a dropped connection)
+        $this->actingAs($user)->postJson('/orders', $this->payload([[$items['bw'], 2]], null, ['order_id' => $order->id]))
+            ->assertRedirect("/orders/{$order->id}");
+
+        $this->assertSame(1, Order::where('status', '!=', 'draft')->count());
+        $this->assertSame(1, $order->events()->where('event', 'placed')->count(), 'placed once, not twice');
+    }
+
+    public function test_a_refused_submit_answers_with_a_message_the_queue_can_show(): void
+    {
+        $user = $this->makeStoreUser($this->makeStore());
+        $items = $this->makeItems();
+        $items['bw']->forceFill(['moq' => 10])->save();
+
+        $this->actingAs($user)->postJson('/orders', $this->payload([[$items['bw'], 2]]))->assertStatus(422)->assertJsonStructure(['message', 'errors']);
+    }
 }

@@ -227,6 +227,8 @@ php artisan schedule:work                # runs the nightly catalog sync locally
 * * * * * cd /path/to/app && php artisan schedule:run >> /dev/null 2>&1
 ```
 
+The scheduler stamps a heartbeat every minute. If it stops for 5+ minutes while sending to ECPOS is on, admins and area managers see an orange banner on every page, and the **ECPOS Queue** page (sidebar) shows it too. That page lists every posted order that hasn't reached ECPOS (failed, stuck, sending, never sent) and has a **Retry all** button. Retry all skips orders that may already be in ECPOS; check those one by one from the order page.
+
 ---
 
 ## Project layout
