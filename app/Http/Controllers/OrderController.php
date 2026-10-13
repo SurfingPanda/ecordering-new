@@ -297,7 +297,7 @@ class OrderController extends Controller
                 ? $this->alreadyOrderedMessage($user->store, $this->existingOrderOn($user->store, $draft->order_date->toDateString(), $draft), $draft->order_date->toDateString())
                 : null),
             'staff' => app(\App\Services\EcposStaff::class)->forStore($user->store?->ecpos_store_id),
-            'items' => Item::active()->orderBy('description')->get()
+            'items' => Item::active()->select(['id', 'source', 'product_code', 'description', 'category', 'moq'])->orderBy('description')->get()
                 ->map(fn (Item $i) => [
                     'id' => $i->id,
                     'source' => $i->source,

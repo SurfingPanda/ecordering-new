@@ -5,9 +5,9 @@ import { createRoot } from 'react-dom/client';
 
 createInertiaApp({
     title: (title) => (title ? `${title} · BW Superbakeshop` : 'BW Superbakeshop'),
-    resolve: (name) => {
-        const pages = import.meta.glob('./pages/**/*.tsx', { eager: true });
-        return pages[`./pages/${name}.tsx`] as never;
+    resolve: async (name) => {
+        const pages = import.meta.glob('./pages/**/*.tsx');
+        return (await pages[`./pages/${name}.tsx`]()) as never;
     },
     setup({ el, App, props }) {
         createRoot(el).render(<App {...props} />);
