@@ -88,7 +88,7 @@ class OrderController extends Controller
                 'notes' => $order->notes,
                 'staff_name' => $order->staff_name,
                 'posted_at' => $order->posted_at?->toIso8601String(),
-                'ecpos' => $user->isManagement() && $order->ecpos_state ? [ // ECPOS details are for admins only; stores never see them
+                'ecpos' => $user->canManageEcpos() && $order->ecpos_state ? [ // ECPOS details are for admins only; stores never see them
                     'state' => $order->ecpos_state, // queued | sending | sent | failed
                     'journal_id' => $order->ecpos_journal_id,
                     'sent_at' => $order->ecpos_sent_at?->toIso8601String(),
@@ -110,7 +110,7 @@ class OrderController extends Controller
                     'category' => $l->category,
                     'quantity' => $l->quantity,
                 ]),
-                'events' => $order->events->reject(fn ($e) => ! $user->isManagement() && in_array($e->event, ['sent', 'send_failed', 'send_requested'], true))->values()->map(fn ($e) => [
+                'events' => $order->events->reject(fn ($e) => ! $user->canManageEcpos() && in_array($e->event, ['sent', 'send_failed', 'send_requested'], true))->values()->map(fn ($e) => [
                     'id' => $e->id,
                     'event' => $e->event,
                     'note' => $e->note,
@@ -124,7 +124,7 @@ class OrderController extends Controller
                 'reset' => $this->mayPlaceFor($user, $order->store_id) && $order->status === 'pending',
                 'cancel' => $user->isManagement() && $order->status === 'posted',
                 'cancel_needs_reason' => true,
-                'send_ecpos' => $user->isManagement() && $order->status === 'posted' && ! $order->ecpos_sent_at && ! in_array($order->ecpos_state, ['queued', 'sending'], true) && app(\App\Services\EcposOrders::class)->enabled(),
+                'send_ecpos' => $user->canManageEcpos() && $order->status === 'posted' && ! $order->ecpos_sent_at && ! in_array($order->ecpos_state, ['queued', 'sending'], true) && app(\App\Services\EcposOrders::class)->enabled(),
             ],
         ]);
     }
@@ -445,7 +445,7 @@ class OrderController extends Controller
     /** Live ECPOS status of an order that was sent (the order page shows it and has a refresh button). */
     public function ecposStatus(Request $request, Order $order): JsonResponse
     {
-        abort_unless($request->user()->isManagement(), 403);
+        abort_unless($request->user()->canManageEcpos(), 403);
         abort_unless($order->ecpos_journal_id, 404);
 
         try {
@@ -461,7 +461,7 @@ class OrderController extends Controller
      */
     public function sendToEcpos(Request $request, Order $order): RedirectResponse
     {
-        abort_unless($request->user()->isManagement(), 403, 'Only an admin or area manager can send an order to ECPOS.');
+        abort_unless($request->user()->canManageEcpos(), 403, 'Only an admin or area manager can send an order to ECPOS.');
         $orders = app(\App\Services\EcposOrders::class);
         abort_unless($orders->enabled(), 404);
 
@@ -516,7 +516,7 @@ class OrderController extends Controller
     public function cancel(Request $request, Order $order): RedirectResponse
     {
         $user = $request->user();
-        abort_unless($user->isManagement(), 403, 'Only an admin or area manager can cancel an order. Use Reset to change a pending one.');
+        abort_unless($user->isManagement(), 403, 'Only an admin, area manager or OPIC can cancel an order. Use Reset to change a pending one.');
 
         $data = $request->validate([
             'reason' => [$user->isManagement() ? 'required' : 'nullable', 'string', 'min:3', 'max:500'],
@@ -678,7 +678,7 @@ class OrderController extends Controller
             'id' => $o->id,
             'number' => $o->number(),
             'reference' => $o->reference(),
-            'ecpos_state' => auth()->user()?->isManagement() ? $o->ecpos_state : null, // stores don't see ECPOS progress
+            'ecpos_state' => auth()->user()?->canManageEcpos() ? $o->ecpos_state : null, // stores don't see ECPOS progress
             'ordered_by' => $o->user->name,
             'store' => $o->store ? ['id' => $o->store->id, 'code' => $o->store->code, 'name' => $o->store->name] : null,
             'status' => $o->status,

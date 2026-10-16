@@ -98,6 +98,31 @@ const managerNav: NavGroup[] = [
             { label: 'Orders (TRs)', href: '/orders', icon: ReceiptText },
             { label: 'Ordering Trends', href: '/admin/trends', icon: TrendingUp },
             { label: 'ECPOS Queue', href: '/admin/ecpos-queue', icon: CloudUpload },
+            { label: 'Forecast', href: '/forecast', icon: TrendingUp },
+        ],
+    },
+];
+
+/** OPIC: every store's orders, who hasn't ordered, the combined forecast and the catalogs. It can cancel a TR but never orders. */
+const opicNav: NavGroup[] = [
+    { items: [{ label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard }] },
+    {
+        label: 'Orders',
+        items: [
+            { label: 'Today’s Orders', href: '/admin/today', icon: CalendarCheck },
+            { label: 'All Store Orders', href: '/admin/consolidated', icon: TableProperties },
+            { label: 'Orders (TRs)', href: '/orders', icon: ReceiptText },
+            { label: 'Ordering Trends', href: '/admin/trends', icon: TrendingUp },
+            { label: 'Forecast (All Stores)', href: '/forecast', icon: TrendingUp },
+        ],
+    },
+    {
+        label: 'Catalog',
+        items: [
+            { label: 'BW Products', href: '/retails?source=bw_products', icon: Package },
+            { label: 'Warehouse Items', href: '/retails?source=warehouse', icon: Warehouse },
+            { label: 'Merchandise', href: '/retails?source=merchandise', icon: ShoppingBag },
+            { label: 'Rejects', href: '/retails?source=rejects', icon: PackageX },
         ],
     },
 ];
@@ -109,6 +134,7 @@ const storeNav: NavGroup[] = [
         items: [
             { label: 'Place an Order', href: '/orders/create', icon: ShoppingCart },
             { label: 'My Orders', href: '/orders', icon: ReceiptText },
+            { label: 'Forecast', href: '/forecast', icon: TrendingUp },
         ],
     },
     {
@@ -170,7 +196,7 @@ function Shell({ title, actions, children }: Props) {
     const [signingOut, setSigningOut] = useState(false);
     const [collapsed, setCollapsed] = useState(readCollapsed); // desktop rail
     const path = url.split('?')[0];
-    const baseNav = auth.user.role === 'admin' ? adminNav : auth.user.role === 'area_manager' ? managerNav : storeNav;
+    const baseNav = auth.user.role === 'admin' ? adminNav : auth.user.role === 'area_manager' ? managerNav : auth.user.role === 'opic' ? opicNav : storeNav;
     const waiting = ordering_today && ordering_today.open ? ordering_today.not_ordered : 0;
     const problems = ordering_today?.ecpos_problems ?? 0;
     const nav = baseNav.map((g) => ({
@@ -255,7 +281,7 @@ function Shell({ title, actions, children }: Props) {
         };
 
         const initial = auth.user.name.slice(0, 1);
-        const roleLabel = auth.user.role === 'admin' ? 'Administrator' : auth.user.role === 'area_manager' ? 'Area Manager' : (auth.user.store?.name ?? auth.user.email);
+        const roleLabel = auth.user.role === 'admin' ? 'Administrator' : auth.user.role === 'area_manager' ? 'Area Manager' : auth.user.role === 'opic' ? 'OPIC' : (auth.user.store?.name ?? auth.user.email);
 
         return (
             <div className="relative flex h-full flex-col overflow-hidden bg-gradient-to-b from-[#06166f] via-[#0a2096] to-[#0b30c8] text-white">
@@ -519,7 +545,7 @@ function DeadlineReminder({
     today,
     onPlaceOrder,
 }: {
-    role: 'admin' | 'area_manager' | 'store';
+    role: 'admin' | 'area_manager' | 'opic' | 'store';
     userId: number;
     deadline: DeadlineInfo | null;
     today: OrderingToday | null;

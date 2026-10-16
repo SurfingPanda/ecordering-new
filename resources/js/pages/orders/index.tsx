@@ -55,7 +55,7 @@ export default function Orders({ orders, status, catalog, store, search, stores 
     const columns = (isAdmin ? 5 : 4) + catalogs.length;
 
     return (
-        <AppLayout title={isAdmin ? 'Orders (TRs)' : 'My Orders'} actions={auth.user.role === 'admin' ? undefined : <NewOrderButton />}>
+        <AppLayout title={isAdmin ? 'Orders (TRs)' : 'My Orders'} actions={auth.user.role === 'admin' || auth.user.role === 'opic' ? undefined : <NewOrderButton />}>
             <div className={panel}>
                 <div className="flex flex-wrap items-center gap-3 border-b border-border p-4">
                     <div className="flex flex-wrap gap-2">

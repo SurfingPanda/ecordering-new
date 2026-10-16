@@ -1,7 +1,7 @@
 export type ItemSource = 'bw_products' | 'warehouse' | 'merchandise' | 'rejects';
 export type RetailGroup = 'regular_product' | 'non_product';
 export type OrderStatus = 'pending' | 'posted' | 'cancelled';
-export type Role = 'admin' | 'area_manager' | 'store';
+export type Role = 'admin' | 'area_manager' | 'opic' | 'store';
 
 export interface Item {
     id: number;

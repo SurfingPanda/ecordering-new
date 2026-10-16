@@ -28,7 +28,7 @@ export default function Account() {
                         </div>
                         <div>
                             <dt className="text-xs text-muted-foreground">{auth.user.role === 'store' ? 'Store' : 'Role'}</dt>
-                            <dd className="mt-0.5 font-medium">{auth.user.role === 'admin' ? 'Administrator' : auth.user.role === 'area_manager' ? 'Area Manager' : (auth.user.store?.name ?? '—')}</dd>
+                            <dd className="mt-0.5 font-medium">{auth.user.role === 'admin' ? 'Administrator' : auth.user.role === 'area_manager' ? 'Area Manager' : auth.user.role === 'opic' ? 'OPIC' : (auth.user.store?.name ?? '—')}</dd>
                         </div>
                         <div className="sm:col-span-2">
                             <dt className="text-xs text-muted-foreground">Email (what you sign in with)</dt>

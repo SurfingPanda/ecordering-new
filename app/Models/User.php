@@ -73,6 +73,9 @@ class User extends Authenticatable
 
     public const AREA_MANAGER = 'area_manager';
 
+    /** OPIC (operations/purchasing): sees every store's orders and the combined forecast, and can cancel a posted TR. Never orders, never touches ECPOS or settings. */
+    public const OPIC = 'opic';
+
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);
@@ -109,8 +112,19 @@ class User extends Authenticatable
         return $this->role === self::AREA_MANAGER;
     }
 
-    /** Admins and area managers: they look across stores (a manager only across the stores given to them). */
+    public function isOpic(): bool
+    {
+        return $this->role === self::OPIC;
+    }
+
+    /** Admins, area managers and OPIC: they look across stores (a manager only across the stores given to them) and can cancel a posted TR. */
     public function isManagement(): bool
+    {
+        return $this->isAdmin() || $this->isAreaManager() || $this->isOpic();
+    }
+
+    /** ECPOS details, resending and the ECPOS queue stay with admins and area managers; OPIC doesn't see them. */
+    public function canManageEcpos(): bool
     {
         return $this->isAdmin() || $this->isAreaManager();
     }
@@ -124,7 +138,7 @@ class User extends Authenticatable
     private ?array $visibleStoreIds = null;
 
     /**
-     * The stores whose orders and reports this person may see. NULL means every store (admins); otherwise the list:
+     * The stores whose orders and reports this person may see. NULL means every store (admins, OPIC); otherwise the list:
      * a store account's own store, or the stores an area manager was given. Everything that reads orders or reports
      * goes through this, so a manager can never see a store that wasn't given to them.
      *
@@ -132,7 +146,7 @@ class User extends Authenticatable
      */
     public function visibleStoreIds(): ?array
     {
-        if ($this->isAdmin()) {
+        if ($this->isAdmin() || $this->isOpic()) {
             return null;
         }
 

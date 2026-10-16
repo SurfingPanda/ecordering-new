@@ -37,6 +37,7 @@ Route::middleware('auth')->group(function () {
     // Orders: both roles can list and open orders, but every query is scoped to what the user may see
     // (a store account only ever gets its own store's orders; see Order::scopeVisibleTo / resolveRouteBinding).
     Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
+    Route::get('/forecast', \App\Http\Controllers\ForecastController::class)->middleware('role:store,area_manager,opic')->name('forecast');
 
     // Placing, posting: store accounts, and area managers on behalf of a store they handle (the controller checks which).
     Route::middleware('role:store,area_manager')->group(function () {
@@ -59,13 +60,17 @@ Route::middleware('auth')->group(function () {
 
     // Admins and area managers: the order reports. An area manager only ever gets the stores an admin gave them
     // (every one of these reads User::visibleStoreIds()).
-    Route::middleware('role:admin,area_manager')->prefix('admin')->name('admin.')->group(function () {
+    Route::middleware('role:admin,area_manager,opic')->prefix('admin')->name('admin.')->group(function () {
         Route::get('/today', \App\Http\Controllers\Admin\TodayController::class)->name('today');
         Route::get('/trends', \App\Http\Controllers\Admin\TrendsController::class)->name('trends');
-        Route::get('/ecpos-queue', [\App\Http\Controllers\Admin\EcposQueueController::class, 'index'])->name('ecpos-queue');
-        Route::post('/ecpos-queue/retry', [\App\Http\Controllers\Admin\EcposQueueController::class, 'retryAll'])->name('ecpos-queue.retry');
         Route::get('/consolidated', [ConsolidatedOrderController::class, 'index'])->name('consolidated');
         Route::get('/consolidated/export', [ConsolidatedOrderController::class, 'export'])->name('consolidated.export');
+    });
+
+    // ECPOS stays with admins and area managers.
+    Route::middleware('role:admin,area_manager')->prefix('admin')->name('admin.')->group(function () {
+        Route::get('/ecpos-queue', [\App\Http\Controllers\Admin\EcposQueueController::class, 'index'])->name('ecpos-queue');
+        Route::post('/ecpos-queue/retry', [\App\Http\Controllers\Admin\EcposQueueController::class, 'retryAll'])->name('ecpos-queue.retry');
     });
 
     // Admin only.
